@@ -10,7 +10,7 @@ import pytesseract
 
 # ── Cross-platform Tesseract path ───────────────────────────────────────────────
 _WIN_TESS = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-if os.name == 'nt' and os.path.exists(_WIN_TESS):
+if os.name == 'nt':
     pytesseract.pytesseract.tesseract_cmd = _WIN_TESS
 # On Linux/Mac, tesseract is expected to be on PATH (installed via apt/brew)
 

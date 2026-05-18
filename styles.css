@@ -1433,14 +1433,217 @@ footer { display: none !important; }
 
 
 /* ══════════════════════════════════════════════════════════════
-   RESPONSIVE
+   RESPONSIVE — Mobile-first (≤768px)
    ══════════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-    .cyber-title { font-size: 1.8rem !important; }
-    .cl-navcard  { font-size: 0.6rem; min-width: 60px; }
-    .cl-topbar   { padding: 0 1rem; }
-    .stat-value  { font-size: 1.5rem; }
-    .cl-ticker-wrap { display: none; }
+
+    /* ── Content container ── */
+    .block-container {
+        max-width: 100% !important;
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+        padding-top: 0 !important;
+    }
+
+    /* ── Top bar ── */
+    .cl-topbar {
+        padding: 0 0.75rem !important;
+        height: 52px !important;
+    }
+    .cl-ticker-wrap { display: none !important; }
+    .cl-brand-name  { font-size: 0.82rem !important; }
+    .cl-brand-icon  { width: 30px !important; height: 30px !important; font-size: 0.9rem !important; }
+    .cl-status      { font-size: 0.6rem !important; padding: 0.2rem 0.6rem !important; }
+    .cl-status-dot  { width: 5px !important; height: 5px !important; }
+
+    /* ── Nav items ── */
+    .cl-nav-row     { padding: 0.3rem 0.25rem 0 !important; gap: 2px !important; }
+    .cl-nav-item    { padding: 6px 2px 8px !important; }
+    .cl-nav-icon svg { width: 16px !important; height: 16px !important; }
+    .cl-nav-label   { font-size: 0.48rem !important; letter-spacing: 0.04em !important; }
+    .cl-navcard     { font-size: 0.55rem !important; min-width: 44px !important; }
+
+    /* ── Hero / titles ── */
+    .cyber-title {
+        font-size: 1.55rem !important;
+        letter-spacing: 0.04em !important;
+    }
+    .cyber-subtitle {
+        font-size: 0.8rem !important;
+        letter-spacing: 0.04em !important;
+    }
+
+    /* ── Radar container ── */
+    .radar-container {
+        width: 110px !important;
+        height: 110px !important;
+    }
+    .radar-center { font-size: 1.8rem !important; }
+
+    /* ── Stat cards ── */
+    .stat-card      { padding: 0.9rem 0.5rem !important; border-radius: 12px !important; }
+    .stat-value     { font-size: 1.5rem !important; }
+    .stat-label     { font-size: 0.65rem !important; }
+    .stat-icon      { font-size: 1.1rem !important; }
+
+    /* ── Glass cards ── */
+    .glass-card {
+        padding: 1rem 0.9rem !important;
+        border-radius: 14px !important;
+    }
+
+    /* ── Section headers ── */
+    .section-header {
+        font-size: 0.7rem !important;
+        letter-spacing: 0.08em !important;
+        padding: 0.4rem 0 !important;
+        margin-bottom: 0.75rem !important;
+    }
+
+    /* ── Input fields ── */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {
+        font-size: 0.88rem !important;
+        padding: 0.7rem 0.9rem !important;
+        border-radius: 10px !important;
+    }
+
+    /* ── Buttons ── */
+    .stButton > button {
+        font-size: 0.82rem !important;
+        padding: 0.6rem 1rem !important;
+        border-radius: 10px !important;
+        letter-spacing: 0.04em !important;
+        min-height: 2.4rem !important;
+    }
+    .cta-btn > div > button,
+    .cta-btn .stButton > button {
+        font-size: 0.78rem !important;
+        padding: 0.75rem 1rem !important;
+    }
+
+    /* ── Tabs ── */
+    .stTabs [data-baseweb="tab"] {
+        font-size: 0.78rem !important;
+        padding: 0.45rem 0.7rem !important;
+    }
+
+    /* ── Threat banner ── */
+    .threat-banner {
+        padding: 0.9rem 1rem !important;
+        gap: 0.75rem !important;
+        border-radius: 10px !important;
+    }
+    .threat-banner > span { font-size: 1.4rem !important; }
+
+    /* ── Threat feed items ── */
+    .threat-feed-item {
+        padding: 0.6rem 0.8rem !important;
+        gap: 0.6rem !important;
+        flex-wrap: wrap !important;
+    }
+    .feed-title  { font-size: 0.78rem !important; }
+    .feed-type   { font-size: 0.65rem !important; }
+    .feed-ts     { font-size: 0.62rem !important; }
+    .feed-level-badge {
+        font-size: 0.58rem !important;
+        padding: 0.15rem 0.45rem !important;
+    }
+
+    /* ── Keyword chips ── */
+    .kw-chip {
+        font-size: 0.72rem !important;
+        padding: 0.25rem 0.65rem !important;
+        border-radius: 14px !important;
+    }
+
+    /* ── Recommendation items ── */
+    .rec-item {
+        font-size: 0.82rem !important;
+        padding: 0.55rem 0.8rem !important;
+    }
+
+    /* ── Data rows ── */
+    .data-row {
+        font-size: 0.8rem !important;
+        padding: 0.55rem 0.8rem !important;
+        gap: 0.5rem !important;
+        flex-wrap: wrap !important;
+    }
+    .data-row .dr-label { font-size: 0.7rem !important; min-width: 80px !important; }
+    .data-row .dr-val   { font-size: 0.75rem !important; }
+
+    /* ── Scan history table ── */
+    .scan-history-table { font-size: 0.72rem !important; }
+    .sht-header,
+    .sht-row {
+        grid-template-columns: 28px 1fr 68px 50px !important; /* hide last col on tiny screens */
+        padding: 0.5rem 0.65rem !important;
+        font-size: 0.68rem !important;
+    }
+    /* Hide timestamp column on mobile */
+    .sht-header > span:last-child,
+    .sht-row   > span:last-child { display: none !important; }
+
+    /* ── Trust meter ── */
+    .trust-meter-bar  { height: 8px !important; }
+
+    /* ── URL display ── */
+    .url-display {
+        font-size: 0.72rem !important;
+        padding: 0.5rem 0.75rem !important;
+    }
+
+    /* ── Text preview ── */
+    .text-preview {
+        font-size: 0.72rem !important;
+        padding: 0.75rem 0.9rem !important;
+        max-height: 140px !important;
+    }
+
+    /* ── Alert boxes ── */
+    .alert-warning,
+    .alert-error {
+        font-size: 0.82rem !important;
+        padding: 0.65rem 0.9rem !important;
+    }
+
+    /* ── File uploader ── */
+    [data-testid="stFileUploaderDropzone"] {
+        padding: 1.25rem !important;
+        font-size: 0.82rem !important;
+    }
+
+    /* ── About page ── */
+    .about-hero { padding: 2rem 0.5rem 1.5rem !important; }
+    .about-hero::before { width: 100% !important; }
+    .protect-card {
+        padding: 1.1rem 0.75rem !important;
+        border-radius: 12px !important;
+    }
+    .protect-card > div:first-child { font-size: 1.3rem !important; }
+
+    /* ── Cyber divider ── */
+    .cyber-divider { margin: 1rem 0 !important; }
+
+    /* ── Action cards (quick actions grid) ── */
+    .action-card {
+        padding: 1.25rem 0.75rem !important;
+        border-radius: 12px !important;
+    }
+    .action-icon  { font-size: 1.5rem !important; }
+    .action-title { font-size: 0.6rem !important; }
+    .action-desc  { font-size: 0.72rem !important; }
+
+    /* ── Badge / live counter ── */
+    .badge-active,
+    .live-counter {
+        font-size: 0.6rem !important;
+        padding: 0.2rem 0.65rem !important;
+    }
+
+    /* ── Plotly charts — allow horizontal scroll if needed ── */
+    .js-plotly-plot { overflow-x: auto !important; }
 }
 
 
