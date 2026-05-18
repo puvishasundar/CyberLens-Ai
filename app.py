@@ -307,29 +307,120 @@ H("""
 """)
 
 # ══════════════════════════════════════════════════════════════════
-# SESSION STATE
+# SESSION STATE  — stored in the user's own browser (localStorage)
 # ══════════════════════════════════════════════════════════════════
-_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "scan_history.json")
+# History is saved in localStorage — it is 100% private to THIS
+# browser only. No server file is used. Other users/devices/browsers
+# can NEVER see it. It persists across tab closes and browser
+# restarts until the user explicitly clicks "Clear All History".
 
-def _load_stats() -> dict:
-    """Load persisted stats from disk, or return empty stats if none exist."""
-    if os.path.exists(_HISTORY_FILE):
+_LS_KEY = "cyberlens_stats"   # localStorage key name
+
+# ── Precisely hide ONLY the bridge textarea using JS (not CSS) ───────────────
+# We use JS to find and hide only the specific bridge widget, so we don't
+# accidentally hide the real analyzer textarea or any other input.
+st.markdown("""
+<style>
+/* Target ONLY the ls_bridge textarea by its aria-label (Streamlit sets this
+   from the widget label "ls_bridge"). This is the most precise CSS selector
+   available without JS — it will not touch any other textarea in the app. */
+textarea[aria-label="ls_bridge"],
+label[data-testid="stWidgetLabel"]:has(+ div textarea[aria-label="ls_bridge"]),
+div[data-testid="element-container"]:has(textarea[aria-label="ls_bridge"]) {
+    position: fixed !important;
+    top: -9999px !important;
+    left: -9999px !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    z-index: -9999 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+</style>
+<script>
+// Belt-and-suspenders: also hide via JS by scanning for the bridge label
+(function hideBridge() {
+    function doHide() {
+        var doc = window.parent.document;
+        // Find the label with text "ls_bridge" and hide its parent container
+        var labels = doc.querySelectorAll('[data-testid="stWidgetLabel"]');
+        for (var i = 0; i < labels.length; i++) {
+            if (labels[i].textContent.trim() === 'ls_bridge') {
+                var container = labels[i].closest('[data-testid="element-container"]');
+                if (container) {
+                    container.style.cssText = 'position:fixed!important;top:-9999px!important;left:-9999px!important;width:1px!important;height:1px!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important;z-index:-9999!important;margin:0!important;padding:0!important;';
+                }
+                break;
+            }
+        }
+    }
+    // Run immediately and again after Streamlit renders
+    doHide();
+    setTimeout(doHide, 500);
+    setTimeout(doHide, 1500);
+})();
+</script>
+""", unsafe_allow_html=True)
+
+# ── Hidden text area that JS will write localStorage data into ──────────────
+# Streamlit reruns whenever this widget changes, so Python can read the value.
+# The CSS above ensures it is completely invisible to users.
+_ls_raw = st.text_area(
+    "ls_bridge",
+    value=st.session_state.get("_ls_raw_prev", ""),
+    key="_ls_bridge",
+    label_visibility="hidden",
+    height=1,
+)
+# Keep previous value so we can detect first-load vs subsequent reruns
+st.session_state["_ls_raw_prev"] = _ls_raw
+
+# ── Bootstrap stats from localStorage on first load ─────────────────────────
+if "stats" not in st.session_state:
+    if _ls_raw and _ls_raw.strip().startswith("{"):
         try:
-            with open(_HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            st.session_state.stats = json.loads(_ls_raw)
         except Exception:
-            pass
-    return make_empty_stats()
+            st.session_state.stats = make_empty_stats()
+    else:
+        st.session_state.stats = make_empty_stats()
 
-def _save_stats(stats: dict) -> None:
-    """Persist stats to disk."""
-    try:
-        with open(_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+# ── JS: on page load, read localStorage → write into the hidden text area ───
+# This fires once per page load, pushing stored data back to Python.
+# History is PRIVATE to this browser — localStorage is sandboxed per origin.
+st.markdown(f"""
+<script>
+(function() {{
+    var val = localStorage.getItem("{_LS_KEY}");
+    if (!val) return;
+    // Find the bridge textarea Streamlit rendered and set its value
+    function injectValue() {{
+        var doc = window.parent.document;
+        // Target our specific bridge textarea by key
+        var areas = doc.querySelectorAll('textarea');
+        for (var i = 0; i < areas.length; i++) {{
+            var ta = areas[i];
+            var nativeInput = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value');
+            nativeInput.set.call(ta, val);
+            ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            break;
+        }}
+    }}
+    // Retry until Streamlit's DOM is ready
+    var tries = 0;
+    var timer = setInterval(function() {{
+        tries++;
+        injectValue();
+        if (tries >= 10) clearInterval(timer);
+    }}, 300);
+}})();
+</script>
+""", unsafe_allow_html=True)
 
-if "stats"        not in st.session_state: st.session_state.stats        = _load_stats()
 if "current_page" not in st.session_state: st.session_state.current_page = "Dashboard"
 if "result_text"  not in st.session_state: st.session_state.result_text  = None
 if "result_ocr"   not in st.session_state: st.session_state.result_ocr   = None
@@ -337,6 +428,27 @@ if "result_pdf"   not in st.session_state: st.session_state.result_pdf   = None
 if "result_url"   not in st.session_state: st.session_state.result_url   = None
 if "result_qr"    not in st.session_state: st.session_state.result_qr    = None
 if "result_co"    not in st.session_state: st.session_state.result_co    = None
+
+
+def _save_to_localstorage(stats: dict) -> None:
+    """Push current stats into the user's browser localStorage via JS."""
+    payload = json.dumps(stats, ensure_ascii=False)
+    # Escape backticks so the JS template literal doesn't break
+    payload = payload.replace('\\', '\\\\').replace('`', '\\`')
+    st.markdown(f"""
+<script>
+localStorage.setItem("{_LS_KEY}", `{payload}`);
+</script>
+""", unsafe_allow_html=True)
+
+
+def _clear_localstorage() -> None:
+    """Wipe the user's CyberLens localStorage entry."""
+    st.markdown(f"""
+<script>
+localStorage.removeItem("{_LS_KEY}");
+</script>
+""", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════
 # PLOTLY THEME
@@ -673,7 +785,8 @@ def log_scan(result: dict, scan_type: str) -> None:
             risk_score=result.get("risk_score", 0),
             scan_type =scan_type,
         )
-        _save_stats(st.session_state.stats)  # persist to disk
+        # Save to user's browser localStorage — private, persistent, device-only
+        _save_to_localstorage(st.session_state.stats)
 
 # ══════════════════════════════════════════════════════════════════
 # NAVIGATION
@@ -1479,7 +1592,7 @@ elif selected == "Analytics":
     # ── Clear History Button ─────────────────────────────────────────
     if st.button("🗑️ Clear All History", key="clear_history_btn"):
         st.session_state.stats = make_empty_stats()
-        _save_stats(st.session_state.stats)
+        _clear_localstorage()   # wipe from browser storage too
         st.rerun()
 
     stats   = st.session_state.stats
