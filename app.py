@@ -2,7 +2,7 @@
 # AI-powered cybersecurity intelligence dashboard
 # Run: streamlit run app.py
 
-import os, time, datetime
+import os, time, datetime, json
 import streamlit as st
 import plotly.graph_objects as go
 
@@ -309,7 +309,27 @@ H("""
 # ══════════════════════════════════════════════════════════════════
 # SESSION STATE
 # ══════════════════════════════════════════════════════════════════
-if "stats"        not in st.session_state: st.session_state.stats        = make_empty_stats()
+_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "scan_history.json")
+
+def _load_stats() -> dict:
+    """Load persisted stats from disk, or return empty stats if none exist."""
+    if os.path.exists(_HISTORY_FILE):
+        try:
+            with open(_HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return make_empty_stats()
+
+def _save_stats(stats: dict) -> None:
+    """Persist stats to disk."""
+    try:
+        with open(_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+if "stats"        not in st.session_state: st.session_state.stats        = _load_stats()
 if "current_page" not in st.session_state: st.session_state.current_page = "Dashboard"
 if "result_text"  not in st.session_state: st.session_state.result_text  = None
 if "result_ocr"   not in st.session_state: st.session_state.result_ocr   = None
@@ -487,7 +507,7 @@ def render_full_result(result: dict) -> None:
     _kw_rows  = max(1, len(kws) // 4)
     _rec_rows = len(recs)
     _url_rows = len(url_detail_items) if url_detail_items else 0
-    _height   = 480 + (_kw_rows * 36) + (_rec_rows * 52) + (_url_rows * 44)
+    _height   = 700 + (_kw_rows * 40) + (_rec_rows * 65) + (_url_rows * 48)
 
     import streamlit.components.v1 as components
     components.html(f"""
@@ -643,7 +663,7 @@ def render_full_result(result: dict) -> None:
 </div>
 </body>
 </html>
-""", height=_height, scrolling=False)
+""", height=_height, scrolling=True)
 
 def log_scan(result: dict, scan_type: str) -> None:
     if "error" not in result:
@@ -653,6 +673,7 @@ def log_scan(result: dict, scan_type: str) -> None:
             risk_score=result.get("risk_score", 0),
             scan_type =scan_type,
         )
+        _save_stats(st.session_state.stats)  # persist to disk
 
 # ══════════════════════════════════════════════════════════════════
 # NAVIGATION
@@ -1454,6 +1475,12 @@ elif selected == "Analytics":
         <div class="cyber-subtitle" style="margin-bottom:1rem">Real-time threat intelligence from your session scans</div>
     </div>''')
     H('<div class="cyber-divider"></div>')
+
+    # ── Clear History Button ─────────────────────────────────────────
+    if st.button("🗑️ Clear All History", key="clear_history_btn"):
+        st.session_state.stats = make_empty_stats()
+        _save_stats(st.session_state.stats)
+        st.rerun()
 
     stats   = st.session_state.stats
     history = stats.get("scan_history", [])

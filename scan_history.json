@@ -1,0 +1,74 @@
+{
+  "total_scans": 8,
+  "threats_found": 6,
+  "safe_scans": 2,
+  "critical": 2,
+  "risk_scores": [
+    52.5,
+    27.9,
+    73.5,
+    11.4,
+    44.8,
+    83.1,
+    85.3,
+    85
+  ],
+  "scan_history": [
+    {
+      "type": "AI Analyzer",
+      "verdict": "MEDIUM",
+      "score": 52.5,
+      "level": "MEDIUM",
+      "ts": "19:47:04"
+    },
+    {
+      "type": "AI Analyzer",
+      "verdict": "LOW",
+      "score": 27.9,
+      "level": "LOW",
+      "ts": "19:47:36"
+    },
+    {
+      "type": "AI Analyzer",
+      "verdict": "HIGH",
+      "score": 73.5,
+      "level": "HIGH",
+      "ts": "19:47:52"
+    },
+    {
+      "type": "AI Analyzer",
+      "verdict": "SAFE",
+      "score": 11.4,
+      "level": "SAFE",
+      "ts": "19:48:28"
+    },
+    {
+      "type": "AI Analyzer",
+      "verdict": "MEDIUM",
+      "score": 44.8,
+      "level": "MEDIUM",
+      "ts": "19:49:15"
+    },
+    {
+      "type": "AI Analyzer",
+      "verdict": "HIGH",
+      "score": 83.1,
+      "level": "HIGH",
+      "ts": "19:49:34"
+    },
+    {
+      "type": "AI Analyzer",
+      "verdict": "CRITICAL",
+      "score": 85.3,
+      "level": "CRITICAL",
+      "ts": "19:49:54"
+    },
+    {
+      "type": "URL Scanner",
+      "verdict": "CRITICAL",
+      "score": 85,
+      "level": "CRITICAL",
+      "ts": "19:51:36"
+    }
+  ]
+}
