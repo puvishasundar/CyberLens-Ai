@@ -1216,7 +1216,7 @@ elif selected == "Analyzer":
                 for i, step in enumerate(steps):
                     ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
                                 f'font-size:0.82rem">{step}</div>', unsafe_allow_html=True)
-                    pb.progress((i + 1) / len(steps)); time.sleep(0.3)
+                    pb.progress((i + 1) / len(steps)); time.sleep(0)
                 ph.empty(); pb.empty()
 
                 result = analyse_text(text_input)
@@ -1270,7 +1270,7 @@ elif selected == "Analyzer":
                 for i, msg in enumerate(["🔍 Loading image…", "🔠 Running OCR…", "🧠 Analysing content…"]):
                     ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
                                 f'font-size:0.82rem">{msg}</div>', unsafe_allow_html=True)
-                    pb.progress((i + 1) / 3); time.sleep(0.4)
+                    pb.progress((i + 1) / 3); time.sleep(0)
                 ph.empty(); pb.empty()
                 try:
                     result = analyse_ocr_image(uploaded_img.read())
@@ -1316,7 +1316,7 @@ elif selected == "Analyzer":
             raw = uploaded_pdf.read()
             for i, msg in enumerate(["📂 Reading PDF…", "📃 Extracting pages…", "🧠 Analysing content…"]):
                 ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);font-size:0.82rem">{msg}</div>', unsafe_allow_html=True)
-                pb.progress((i + 1) / 3); time.sleep(0.4)
+                pb.progress((i + 1) / 3); time.sleep(0)
             ph.empty(); pb.empty()
 
             result = analyse_pdf(raw)
@@ -1384,7 +1384,7 @@ elif selected == "URL Scanner":
             for i, step in enumerate(steps):
                 ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
                             f'font-size:0.82rem">{step}</div>', unsafe_allow_html=True)
-                pb.progress((i + 1) / len(steps)); time.sleep(0.25)
+                pb.progress((i + 1) / len(steps)); time.sleep(0)
             ph.empty(); pb.empty()
             result = analyse_url_full(url_val.strip())
             log_scan(result, "URL Scanner")
@@ -1418,7 +1418,7 @@ elif selected == "QR Scanner":
             H("</div>")
         with col2:
             with st.spinner("Decoding QR code…"):
-                time.sleep(0.5)
+                time.sleep(0)
                 result = analyse_qr(uploaded.read())
             if "qr_data" in result:
                 section_header("Decoded Content", "🔓")
@@ -1465,7 +1465,7 @@ elif selected == "Company Verifier":
             for i, step in enumerate(steps):
                 ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
                             f'font-size:0.82rem">{step}</div>', unsafe_allow_html=True)
-                pb.progress((i + 1) / len(steps)); time.sleep(0.3)
+                pb.progress((i + 1) / len(steps)); time.sleep(0)
             ph.empty(); pb.empty()
             result = analyse_company(company_name, recruiter_email, website_url)
 
