@@ -1648,8 +1648,9 @@ footer { display: none !important; }
 
 
 /* ══════════════════════════════════════════════════════════════
-   GLOBAL SCALE-UP — bigger everything
+   GLOBAL SCALE-UP — bigger everything (desktop only ≥769px)
    ══════════════════════════════════════════════════════════════ */
+@media (min-width: 769px) {
 
 /* Wider content area */
 .block-container {
@@ -1781,3 +1782,4 @@ footer { display: none !important; }
     opacity: 0 !important;
     pointer-events: none !important;
 }
+} /* end @media (min-width: 769px) */

@@ -688,11 +688,7 @@ _nav_items_html = ""
 for key, label in NAV_ITEMS:
     active_cls = "cl-nav-active" if cur == key else ""
     icon_svg   = NAV_ICONS.get(key, "")
-    _nav_items_html += f'''<div class="cl-nav-item {active_cls}" onclick="
-        Array.from(window.parent.document.querySelectorAll('button')).forEach(function(b){{
-            if(b.innerText.trim()==='{label}') b.click();
-        }});
-    ">
+    _nav_items_html += f'''<div class="cl-nav-item {active_cls}" data-label="{label}" onclick="navClick(this, '{label}')">
         <div class="cl-nav-icon">{icon_svg}</div>
         <div class="cl-nav-label">{label}</div>
     </div>'''
@@ -837,6 +833,30 @@ body{{background:#020409;font-family:'Rajdhani',sans-serif;overflow:hidden}}
   {_nav_items_html}
 </div>
 
+<script>
+var _navLock = false;
+function navClick(el, label) {{
+  if (_navLock) return;
+  _navLock = true;
+  // Visually mark active immediately
+  document.querySelectorAll('.cl-nav-item').forEach(function(n) {{
+    n.classList.remove('cl-nav-active');
+  }});
+  el.classList.add('cl-nav-active');
+  // Find and click the hidden Streamlit button safely
+  try {{
+    var btns = window.parent.document.querySelectorAll('button');
+    for (var i = 0; i < btns.length; i++) {{
+      if (btns[i].innerText.trim() === label) {{
+        btns[i].click();
+        break;
+      }}
+    }}
+  }} catch(e) {{}}
+  setTimeout(function() {{ _navLock = false; }}, 800);
+}}
+</script>
+
 </body></html>
 """, height=130, scrolling=False)
 
@@ -977,19 +997,32 @@ body{background:transparent;}
 </style>
 </head><body>
 <div class="grid">
-  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='AI Analyzer')b.click()})">
+  <div class="card" onclick="safeNav('AI Analyzer')">
     <div class="card-emoji">&#x1F52C;</div><div class="card-name">AI ANALYZER</div>
   </div>
-  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='URL Scanner')b.click()})">
+  <div class="card" onclick="safeNav('URL Scanner')">
     <div class="card-emoji">&#x1F310;</div><div class="card-name">URL SCANNER</div>
   </div>
-  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='QR Scanner')b.click()})">
+  <div class="card" onclick="safeNav('QR Scanner')">
     <div class="card-emoji">&#x1F4F7;</div><div class="card-name">QR SCANNER</div>
   </div>
-  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='Company Verify')b.click()})">
+  <div class="card" onclick="safeNav('Company Verify')">
     <div class="card-emoji">&#x1F3E2;</div><div class="card-name">COMPANY VERIFIER</div>
   </div>
 </div>
+<script>
+var _lock=false;
+function safeNav(label){
+  if(_lock)return;_lock=true;
+  try{
+    var btns=window.parent.document.querySelectorAll('button');
+    for(var i=0;i<btns.length;i++){
+      if(btns[i].innerText.trim()===label){btns[i].click();break;}
+    }
+  }catch(e){}
+  setTimeout(function(){_lock=false;},800);
+}
+</script>
 </body></html>
 """, height=130)
 
