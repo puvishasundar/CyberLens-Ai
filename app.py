@@ -236,6 +236,15 @@ st.markdown("""<style>
 .pulse-high{animation:pulseHigh 2s ease-in-out infinite}
 .pulse-critical{animation:pulseCritical 1.5s ease-in-out infinite}
 
+/* ── Hidden localStorage bridge textarea ── */
+div:has(> div > textarea[aria-label="__cls_bridge__"]) {
+    position: absolute !important;
+    width: 0 !important; height: 0 !important;
+    overflow: hidden !important; opacity: 0 !important;
+    pointer-events: none !important; z-index: -9999 !important;
+    top: 0 !important; left: 0 !important;
+}
+
 /* ── Scan History Table ── */
 .scan-history-table {
     border:1px solid rgba(0,212,255,.1);
@@ -307,63 +316,83 @@ H("""
 """)
 
 # ══════════════════════════════════════════════════════════════════
-# SESSION STATE  — stored in the user's own browser (localStorage)
-# ══════════════════════════════════════════════════════════════════
-# History is saved in localStorage — it is 100% private to THIS
-# browser only. No server file is used. Other users/devices/browsers
-# can NEVER see it. It persists across tab closes and browser
-# restarts until the user explicitly clicks "Clear All History".
-
-_LS_KEY = "cyberlens_stats"   # localStorage key name
-
-# ══════════════════════════════════════════════════════════════════
-# SESSION STATE — history stored in browser localStorage,
-# synced back to Python via JS → URL query param on page load.
-# localStorage is 100% private to this browser/device only.
-# History persists across tab closes and browser restarts.
-# Only cleared when user explicitly clicks "Clear All History".
+# SESSION STATE — history stored in browser localStorage ONLY.
+# ✅ 100% private to this browser/device — other users NEVER see it.
+# ✅ Persists across tab closes, refreshes, and browser restarts.
+# ✅ Never appears in the URL — history is invisible to anyone else.
+# ✅ Only cleared when the user explicitly clicks "Clear All History".
 # ══════════════════════════════════════════════════════════════════
 
-_LS_KEY  = "cyberlens_stats"   # localStorage key
-_QP_KEY  = "cls"               # URL query param key (short to keep URL tidy)
+_LS_KEY = "cyberlens_scan_history_v2"  # localStorage key (scoped, private)
 
-# ── Step 1: On first load, JS reads localStorage and writes it into
-#    the URL query param (?cls=...), which triggers a Streamlit rerun.
-#    Python can then read it reliably via st.query_params.
-#    On subsequent reruns the param is already set, so JS does nothing.
+# ── Bridge: JS reads localStorage → populates a hidden text_area ──
+# The textarea value is read by Python on every rerun. No URL param
+# is ever used, so history is completely invisible in the address bar.
+# A MutationObserver watches for Streamlit to render the textarea,
+# then fires a native input event so Streamlit picks up the value.
 st.markdown(f"""
+<style>
+/* Completely hide the bridge textarea from the user */
+div[data-testid="stTextArea"][data-bridge="cls-bridge"] {{
+    position: absolute !important;
+    width: 0 !important; height: 0 !important;
+    overflow: hidden !important; opacity: 0 !important;
+    pointer-events: none !important; z-index: -1 !important;
+}}
+</style>
 <script>
 (function() {{
-    // Only run once per page load (not on Streamlit reruns)
-    if (window._clsBridgeDone) return;
-    window._clsBridgeDone = true;
+    if (window._clsBridgeInit) return;
+    window._clsBridgeInit = true;
 
-    var val = localStorage.getItem("{_LS_KEY}");
-    if (!val) return;
+    function fillBridge() {{
+        // Find the hidden textarea by its aria-label
+        var ta = window.parent.document.querySelector(
+            'textarea[aria-label="__cls_bridge__"]'
+        );
+        if (!ta) return false;
 
-    // Check if the query param is already set to the same value
-    var params = new URLSearchParams(window.parent.location.search);
-    var existing = params.get("{_QP_KEY}");
-    if (existing === val) return;   // already synced, nothing to do
+        var stored = localStorage.getItem("{_LS_KEY}") || "";
+        if (ta.value === stored) return true;   // already in sync
 
-    // Write localStorage data into the URL query param and reload
-    // so Streamlit's Python side can read it on the next run.
-    params.set("{_QP_KEY}", val);
-    var newUrl = window.parent.location.pathname + '?' + params.toString();
-    window.parent.history.replaceState(null, '', newUrl);
-    window.parent.location.reload();
+        // Set the value and fire React's synthetic change event
+        var nativeInput = Object.getOwnPropertyDescriptor(
+            window.HTMLTextAreaElement.prototype, 'value'
+        );
+        nativeInput.set.call(ta, stored);
+        ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        return true;
+    }}
+
+    // Try immediately (fast reruns where DOM already exists)
+    if (!fillBridge()) {{
+        // Observe the parent document for the textarea to appear
+        var obs = new MutationObserver(function() {{
+            if (fillBridge()) obs.disconnect();
+        }});
+        obs.observe(window.parent.document.body, {{
+            childList: true, subtree: true
+        }});
+        // Fallback: retry a few times in case MutationObserver misses it
+        var retries = 0;
+        var iv = setInterval(function() {{
+            if (fillBridge() || ++retries > 20) clearInterval(iv);
+        }}, 150);
+    }}
 }})();
 </script>
 """, unsafe_allow_html=True)
 
-# ── Step 2: Python reads the query param (set by JS above) ──────────────────
-_qp_raw = st.query_params.get(_QP_KEY, "")
+# Hidden bridge textarea — invisible to user, read by Python below
+_bridge_raw = st.text_area("__cls_bridge__", key="__cls_bridge__",
+                            label_visibility="hidden", height=1)
 
-# ── Step 3: Bootstrap stats from the query param data ───────────────────────
+# ── Bootstrap stats from localStorage (via bridge) ───────────────
 if "stats" not in st.session_state:
-    if _qp_raw and _qp_raw.strip().startswith("{"):
+    _raw = (_bridge_raw or "").strip()
+    if _raw.startswith("{"):
         try:
-            st.session_state.stats = json.loads(_qp_raw)
+            st.session_state.stats = json.loads(_raw)
         except Exception:
             st.session_state.stats = make_empty_stats()
     else:
@@ -379,37 +408,27 @@ if "result_co"    not in st.session_state: st.session_state.result_co    = None
 
 
 def _save_to_localstorage(stats: dict) -> None:
-    """Push current stats into localStorage AND the URL query param so
-    Python can read it back reliably on the next page load/refresh."""
+    """Save scan history to this browser's localStorage only.
+    No URL params. No server files. Completely private to this device."""
     payload = json.dumps(stats, ensure_ascii=False)
-    payload_escaped = payload.replace('\\', '\\\\').replace('`', '\\`')
+    payload_escaped = payload.replace('\\', '\\\\').replace('`', '\\`').replace('</script>', '<\\/script>')
     st.markdown(f"""
 <script>
 (function() {{
-    var payload = `{payload_escaped}`;
-    // 1. Save to localStorage for persistence across sessions
-    localStorage.setItem("{_LS_KEY}", payload);
-    // 2. Also sync to URL query param so Python reads it on next reload
-    var params = new URLSearchParams(window.parent.location.search);
-    params.set("{_QP_KEY}", payload);
-    var newUrl = window.parent.location.pathname + '?' + params.toString();
-    window.parent.history.replaceState(null, '', newUrl);
+    try {{
+        localStorage.setItem("{_LS_KEY}", `{payload_escaped}`);
+    }} catch(e) {{ console.warn("CyberLens: localStorage write failed", e); }}
 }})();
 </script>
 """, unsafe_allow_html=True)
 
 
 def _clear_localstorage() -> None:
-    """Wipe the user's CyberLens history from localStorage and query param."""
+    """Wipe this user's CyberLens history from localStorage only."""
     st.markdown(f"""
 <script>
 (function() {{
     localStorage.removeItem("{_LS_KEY}");
-    var params = new URLSearchParams(window.parent.location.search);
-    params.delete("{_QP_KEY}");
-    var newUrl = window.parent.location.pathname +
-        (params.toString() ? '?' + params.toString() : '');
-    window.parent.history.replaceState(null, '', newUrl);
 }})();
 </script>
 """, unsafe_allow_html=True)
