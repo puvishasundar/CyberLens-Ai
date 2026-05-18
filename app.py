@@ -31,11 +31,13 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Inject CSS ───────────────────────────────────────────────────
+# ── Inject CSS (cache-busted via file mtime) ─────────────────────
 _CSS_PATH = os.path.join(os.path.dirname(__file__), "styles.css")
 if os.path.exists(_CSS_PATH):
+    _css_version = int(os.path.getmtime(_CSS_PATH))
     with open(_CSS_PATH, encoding="utf-8") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+        _css_content = f.read()
+    st.markdown(f"<style>/* v={_css_version} */\n{_css_content}</style>", unsafe_allow_html=True)
 
 # ── Additional UI improvements CSS ───────────────────────────────
 st.markdown("""<style>
@@ -1190,7 +1192,17 @@ elif selected == "Analyzer":
                                 f'font-size:0.82rem">{msg}</div>', unsafe_allow_html=True)
                     pb.progress((i + 1) / 3); time.sleep(0.4)
                 ph.empty(); pb.empty()
-                result = analyse_ocr_image(uploaded_img.read())
+                try:
+                    result = analyse_ocr_image(uploaded_img.read())
+                except Exception as _ocr_err:
+                    err_msg = str(_ocr_err)
+                    if "tesseract" in err_msg.lower() or "TesseractNotFound" in err_msg:
+                        result = {"error": "⚠️ Tesseract-OCR is not installed or not found in PATH. "
+                                           "To fix this, install it on your server: "
+                                           "<code>sudo apt-get install tesseract-ocr</code> "
+                                           "then restart Streamlit."}
+                    else:
+                        result = {"error": f"⚠️ OCR failed: {err_msg}"}
                 if "extracted_text" in result:
                     section_header("Extracted Text", "📄")
                     H(f'<div class="text-preview">{result["extracted_text"][:600]}</div>')
