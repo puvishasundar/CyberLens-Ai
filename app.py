@@ -316,110 +316,58 @@ H("""
 
 _LS_KEY = "cyberlens_stats"   # localStorage key name
 
-# ── Precisely hide ONLY the bridge textarea using JS (not CSS) ───────────────
-# We use JS to find and hide only the specific bridge widget, so we don't
-# accidentally hide the real analyzer textarea or any other input.
-st.markdown("""
-<style>
-/* Target ONLY the ls_bridge textarea by its aria-label (Streamlit sets this
-   from the widget label "ls_bridge"). This is the most precise CSS selector
-   available without JS — it will not touch any other textarea in the app. */
-textarea[aria-label="ls_bridge"],
-label[data-testid="stWidgetLabel"]:has(+ div textarea[aria-label="ls_bridge"]),
-div[data-testid="element-container"]:has(textarea[aria-label="ls_bridge"]) {
-    position: fixed !important;
-    top: -9999px !important;
-    left: -9999px !important;
-    width: 1px !important;
-    height: 1px !important;
-    overflow: hidden !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
-    z-index: -9999 !important;
-    margin: 0 !important;
-    padding: 0 !important;
-}
-</style>
+# ══════════════════════════════════════════════════════════════════
+# SESSION STATE — history stored in browser localStorage,
+# synced back to Python via JS → URL query param on page load.
+# localStorage is 100% private to this browser/device only.
+# History persists across tab closes and browser restarts.
+# Only cleared when user explicitly clicks "Clear All History".
+# ══════════════════════════════════════════════════════════════════
+
+_LS_KEY  = "cyberlens_stats"   # localStorage key
+_QP_KEY  = "cls"               # URL query param key (short to keep URL tidy)
+
+# ── Step 1: On first load, JS reads localStorage and writes it into
+#    the URL query param (?cls=...), which triggers a Streamlit rerun.
+#    Python can then read it reliably via st.query_params.
+#    On subsequent reruns the param is already set, so JS does nothing.
+st.markdown(f"""
 <script>
-// Belt-and-suspenders: also hide via JS by scanning for the bridge label
-(function hideBridge() {
-    function doHide() {
-        var doc = window.parent.document;
-        // Find the label with text "ls_bridge" and hide its parent container
-        var labels = doc.querySelectorAll('[data-testid="stWidgetLabel"]');
-        for (var i = 0; i < labels.length; i++) {
-            if (labels[i].textContent.trim() === 'ls_bridge') {
-                var container = labels[i].closest('[data-testid="element-container"]');
-                if (container) {
-                    container.style.cssText = 'position:fixed!important;top:-9999px!important;left:-9999px!important;width:1px!important;height:1px!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important;z-index:-9999!important;margin:0!important;padding:0!important;';
-                }
-                break;
-            }
-        }
-    }
-    // Run immediately and again after Streamlit renders
-    doHide();
-    setTimeout(doHide, 500);
-    setTimeout(doHide, 1500);
-})();
+(function() {{
+    // Only run once per page load (not on Streamlit reruns)
+    if (window._clsBridgeDone) return;
+    window._clsBridgeDone = true;
+
+    var val = localStorage.getItem("{_LS_KEY}");
+    if (!val) return;
+
+    // Check if the query param is already set to the same value
+    var params = new URLSearchParams(window.parent.location.search);
+    var existing = params.get("{_QP_KEY}");
+    if (existing === val) return;   // already synced, nothing to do
+
+    // Write localStorage data into the URL query param and reload
+    // so Streamlit's Python side can read it on the next run.
+    params.set("{_QP_KEY}", val);
+    var newUrl = window.parent.location.pathname + '?' + params.toString();
+    window.parent.history.replaceState(null, '', newUrl);
+    window.parent.location.reload();
+}})();
 </script>
 """, unsafe_allow_html=True)
 
-# ── Hidden text area that JS will write localStorage data into ──────────────
-# Streamlit reruns whenever this widget changes, so Python can read the value.
-# The CSS above ensures it is completely invisible to users.
-_ls_raw = st.text_area(
-    "ls_bridge",
-    value=st.session_state.get("_ls_raw_prev", ""),
-    key="_ls_bridge",
-    label_visibility="hidden",
-    height=1,
-)
-# Keep previous value so we can detect first-load vs subsequent reruns
-st.session_state["_ls_raw_prev"] = _ls_raw
+# ── Step 2: Python reads the query param (set by JS above) ──────────────────
+_qp_raw = st.query_params.get(_QP_KEY, "")
 
-# ── Bootstrap stats from localStorage on first load ─────────────────────────
+# ── Step 3: Bootstrap stats from the query param data ───────────────────────
 if "stats" not in st.session_state:
-    if _ls_raw and _ls_raw.strip().startswith("{"):
+    if _qp_raw and _qp_raw.strip().startswith("{"):
         try:
-            st.session_state.stats = json.loads(_ls_raw)
+            st.session_state.stats = json.loads(_qp_raw)
         except Exception:
             st.session_state.stats = make_empty_stats()
     else:
         st.session_state.stats = make_empty_stats()
-
-# ── JS: on page load, read localStorage → write into the hidden text area ───
-# This fires once per page load, pushing stored data back to Python.
-# History is PRIVATE to this browser — localStorage is sandboxed per origin.
-st.markdown(f"""
-<script>
-(function() {{
-    var val = localStorage.getItem("{_LS_KEY}");
-    if (!val) return;
-    // Find the bridge textarea Streamlit rendered and set its value
-    function injectValue() {{
-        var doc = window.parent.document;
-        // Target our specific bridge textarea by key
-        var areas = doc.querySelectorAll('textarea');
-        for (var i = 0; i < areas.length; i++) {{
-            var ta = areas[i];
-            var nativeInput = Object.getOwnPropertyDescriptor(
-                window.HTMLTextAreaElement.prototype, 'value');
-            nativeInput.set.call(ta, val);
-            ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            break;
-        }}
-    }}
-    // Retry until Streamlit's DOM is ready
-    var tries = 0;
-    var timer = setInterval(function() {{
-        tries++;
-        injectValue();
-        if (tries >= 10) clearInterval(timer);
-    }}, 300);
-}})();
-</script>
-""", unsafe_allow_html=True)
 
 if "current_page" not in st.session_state: st.session_state.current_page = "Dashboard"
 if "result_text"  not in st.session_state: st.session_state.result_text  = None
@@ -431,22 +379,38 @@ if "result_co"    not in st.session_state: st.session_state.result_co    = None
 
 
 def _save_to_localstorage(stats: dict) -> None:
-    """Push current stats into the user's browser localStorage via JS."""
+    """Push current stats into localStorage AND the URL query param so
+    Python can read it back reliably on the next page load/refresh."""
     payload = json.dumps(stats, ensure_ascii=False)
-    # Escape backticks so the JS template literal doesn't break
-    payload = payload.replace('\\', '\\\\').replace('`', '\\`')
+    payload_escaped = payload.replace('\\', '\\\\').replace('`', '\\`')
     st.markdown(f"""
 <script>
-localStorage.setItem("{_LS_KEY}", `{payload}`);
+(function() {{
+    var payload = `{payload_escaped}`;
+    // 1. Save to localStorage for persistence across sessions
+    localStorage.setItem("{_LS_KEY}", payload);
+    // 2. Also sync to URL query param so Python reads it on next reload
+    var params = new URLSearchParams(window.parent.location.search);
+    params.set("{_QP_KEY}", payload);
+    var newUrl = window.parent.location.pathname + '?' + params.toString();
+    window.parent.history.replaceState(null, '', newUrl);
+}})();
 </script>
 """, unsafe_allow_html=True)
 
 
 def _clear_localstorage() -> None:
-    """Wipe the user's CyberLens localStorage entry."""
+    """Wipe the user's CyberLens history from localStorage and query param."""
     st.markdown(f"""
 <script>
-localStorage.removeItem("{_LS_KEY}");
+(function() {{
+    localStorage.removeItem("{_LS_KEY}");
+    var params = new URLSearchParams(window.parent.location.search);
+    params.delete("{_QP_KEY}");
+    var newUrl = window.parent.location.pathname +
+        (params.toString() ? '?' + params.toString() : '');
+    window.parent.history.replaceState(null, '', newUrl);
+}})();
 </script>
 """, unsafe_allow_html=True)
 
