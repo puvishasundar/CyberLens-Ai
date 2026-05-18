@@ -5,6 +5,7 @@
 import os, time, datetime, json
 import streamlit as st
 import plotly.graph_objects as go
+from streamlit_local_storage import LocalStorage
 
 # Local modules
 from analyzer import (
@@ -319,80 +320,22 @@ H("""
 # SESSION STATE — history stored in browser localStorage ONLY.
 # ✅ 100% private to this browser/device — other users NEVER see it.
 # ✅ Persists across tab closes, refreshes, and browser restarts.
-# ✅ Never appears in the URL — history is invisible to anyone else.
-# ✅ Only cleared when the user explicitly clicks "Clear All History".
+# ✅ Never appears in the URL — completely invisible to anyone else.
+# ✅ Only cleared when the user clicks "Clear All History".
+# Uses streamlit-local-storage for reliable JS↔Python bridging.
 # ══════════════════════════════════════════════════════════════════
 
-_LS_KEY = "cyberlens_scan_history_v2"  # localStorage key (scoped, private)
+_LS_KEY  = "cyberlens_stats"
+_localS  = LocalStorage()
 
-# ── Bridge: JS reads localStorage → populates a hidden text_area ──
-# The textarea value is read by Python on every rerun. No URL param
-# is ever used, so history is completely invisible in the address bar.
-# A MutationObserver watches for Streamlit to render the textarea,
-# then fires a native input event so Streamlit picks up the value.
-st.markdown(f"""
-<style>
-/* Completely hide the bridge textarea from the user */
-div[data-testid="stTextArea"][data-bridge="cls-bridge"] {{
-    position: absolute !important;
-    width: 0 !important; height: 0 !important;
-    overflow: hidden !important; opacity: 0 !important;
-    pointer-events: none !important; z-index: -1 !important;
-}}
-</style>
-<script>
-(function() {{
-    if (window._clsBridgeInit) return;
-    window._clsBridgeInit = true;
-
-    function fillBridge() {{
-        // Find the hidden textarea by its aria-label
-        var ta = window.parent.document.querySelector(
-            'textarea[aria-label="__cls_bridge__"]'
-        );
-        if (!ta) return false;
-
-        var stored = localStorage.getItem("{_LS_KEY}") || "";
-        if (ta.value === stored) return true;   // already in sync
-
-        // Set the value and fire React's synthetic change event
-        var nativeInput = Object.getOwnPropertyDescriptor(
-            window.HTMLTextAreaElement.prototype, 'value'
-        );
-        nativeInput.set.call(ta, stored);
-        ta.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        return true;
-    }}
-
-    // Try immediately (fast reruns where DOM already exists)
-    if (!fillBridge()) {{
-        // Observe the parent document for the textarea to appear
-        var obs = new MutationObserver(function() {{
-            if (fillBridge()) obs.disconnect();
-        }});
-        obs.observe(window.parent.document.body, {{
-            childList: true, subtree: true
-        }});
-        // Fallback: retry a few times in case MutationObserver misses it
-        var retries = 0;
-        var iv = setInterval(function() {{
-            if (fillBridge() || ++retries > 20) clearInterval(iv);
-        }}, 150);
-    }}
-}})();
-</script>
-""", unsafe_allow_html=True)
-
-# Hidden bridge textarea — invisible to user, read by Python below
-_bridge_raw = st.text_area("__cls_bridge__", key="__cls_bridge__",
-                            label_visibility="hidden", height=1)
-
-# ── Bootstrap stats from localStorage (via bridge) ───────────────
+# ── Read persisted stats from browser localStorage ───────────────
 if "stats" not in st.session_state:
-    _raw = (_bridge_raw or "").strip()
-    if _raw.startswith("{"):
+    _stored = _localS.getItem(_LS_KEY)
+    if isinstance(_stored, dict):
+        st.session_state.stats = _stored
+    elif isinstance(_stored, str) and _stored.strip().startswith("{"):
         try:
-            st.session_state.stats = json.loads(_raw)
+            st.session_state.stats = json.loads(_stored)
         except Exception:
             st.session_state.stats = make_empty_stats()
     else:
@@ -409,29 +352,13 @@ if "result_co"    not in st.session_state: st.session_state.result_co    = None
 
 def _save_to_localstorage(stats: dict) -> None:
     """Save scan history to this browser's localStorage only.
-    No URL params. No server files. Completely private to this device."""
-    payload = json.dumps(stats, ensure_ascii=False)
-    payload_escaped = payload.replace('\\', '\\\\').replace('`', '\\`').replace('</script>', '<\\/script>')
-    st.markdown(f"""
-<script>
-(function() {{
-    try {{
-        localStorage.setItem("{_LS_KEY}", `{payload_escaped}`);
-    }} catch(e) {{ console.warn("CyberLens: localStorage write failed", e); }}
-}})();
-</script>
-""", unsafe_allow_html=True)
+    Private to this device — no URL params, no server files."""
+    _localS.setItem(_LS_KEY, stats)
 
 
 def _clear_localstorage() -> None:
     """Wipe this user's CyberLens history from localStorage only."""
-    st.markdown(f"""
-<script>
-(function() {{
-    localStorage.removeItem("{_LS_KEY}");
-}})();
-</script>
-""", unsafe_allow_html=True)
+    _localS.deleteItem(_LS_KEY)
 
 # ══════════════════════════════════════════════════════════════════
 # PLOTLY THEME
