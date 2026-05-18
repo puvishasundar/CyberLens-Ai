@@ -358,7 +358,10 @@ def _save_to_localstorage(stats: dict) -> None:
 
 def _clear_localstorage() -> None:
     """Wipe this user's CyberLens history from localStorage only."""
-    _localS.deleteItem(_LS_KEY)
+    try:
+        _localS.deleteItem(_LS_KEY)
+    except (KeyError, Exception):
+        pass
 
 # ══════════════════════════════════════════════════════════════════
 # PLOTLY THEME
