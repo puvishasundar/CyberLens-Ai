@@ -1456,12 +1456,34 @@ footer { display: none !important; }
     .cl-status      { font-size: 0.6rem !important; padding: 0.2rem 0.6rem !important; }
     .cl-status-dot  { width: 5px !important; height: 5px !important; }
 
-    /* ── Nav items ── */
-    .cl-nav-row     { padding: 0.3rem 0.25rem 0 !important; gap: 2px !important; }
-    .cl-nav-item    { padding: 6px 2px 8px !important; }
-    .cl-nav-icon svg { width: 16px !important; height: 16px !important; }
-    .cl-nav-label   { font-size: 0.48rem !important; letter-spacing: 0.04em !important; }
-    .cl-navcard     { font-size: 0.55rem !important; min-width: 44px !important; }
+    /* ── Nav items — horizontal scroll (swipe left/right) ── */
+    .cl-nav-row {
+        overflow-x: auto !important;
+        overflow-y: visible !important;
+        -webkit-overflow-scrolling: touch !important;
+        scroll-snap-type: x mandatory !important;
+        flex-wrap: nowrap !important;
+        padding: 0.3rem 0.5rem 0 !important;
+        gap: 4px !important;
+        /* Hide scrollbar visually but keep it functional */
+        scrollbar-width: none !important;
+    }
+    .cl-nav-row::-webkit-scrollbar { display: none !important; }
+
+    .cl-nav-item {
+        flex: 0 0 auto !important;      /* don't shrink — keep natural width */
+        min-width: 64px !important;
+        max-width: 80px !important;
+        scroll-snap-align: start !important;
+        padding: 7px 6px 9px !important;
+    }
+    .cl-nav-icon svg { width: 18px !important; height: 18px !important; }
+    .cl-nav-label {
+        font-size: 0.52rem !important;
+        letter-spacing: 0.03em !important;
+        white-space: nowrap !important;
+    }
+    .cl-navcard { font-size: 0.55rem !important; min-width: 64px !important; }
 
     /* ── Hero / titles ── */
     .cyber-title {
@@ -1644,6 +1666,42 @@ footer { display: none !important; }
 
     /* ── Plotly charts — allow horizontal scroll if needed ── */
     .js-plotly-plot { overflow-x: auto !important; }
+
+    /* ── Result card iframe — allow full height, no clipping ── */
+    iframe[title="st.components.v1.html"] {
+        width: 100% !important;
+        min-height: 600px !important;      /* enough room for ring + recs */
+        overflow: visible !important;
+    }
+
+    /* ── Inside result iframe: stack ring above verdict on mobile ── */
+    /* (injected via components.html inline style — override via CSS var cascade) */
+    .arc-row {
+        flex-direction: column !important;
+        align-items: center !important;
+        gap: 1rem !important;
+    }
+    .verdict-col { min-width: 0 !important; width: 100% !important; }
+
+    /* ── Meta grid — 2 cols on mobile instead of 3 ── */
+    .result-meta-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+    }
+
+    /* ── Recommendations — ensure not clipped ── */
+    .rec-item {
+        font-size: 0.82rem !important;
+        padding: 0.55rem 0.8rem !important;
+        white-space: normal !important;
+        word-break: break-word !important;
+    }
+
+    /* ── AI result card — full width, no horizontal overflow ── */
+    .ai-result-card {
+        padding: 1rem 0.85rem !important;
+        margin-top: 0.75rem !important;
+        overflow: visible !important;
+    }
 }
 
 

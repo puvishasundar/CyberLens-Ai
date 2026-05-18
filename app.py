@@ -484,10 +484,10 @@ def render_full_result(result: dict) -> None:
 
     # ── Use st.components to render the full result card (SVG safe) ───────────
     # Dynamic height: base + extras for keywords and recommendations
-    _kw_rows  = max(1, len(kws) // 4)
+    _kw_rows  = max(1, len(kws) // 3)       # more rows on narrow screens
     _rec_rows = len(recs)
     _url_rows = len(url_detail_items) if url_detail_items else 0
-    _height   = 480 + (_kw_rows * 36) + (_rec_rows * 52) + (_url_rows * 44)
+    _height   = 560 + (_kw_rows * 44) + (_rec_rows * 64) + (_url_rows * 50)
 
     import streamlit.components.v1 as components
     components.html(f"""
@@ -509,6 +509,14 @@ def render_full_result(result: dict) -> None:
   }}
   @keyframes resultFadeIn{{from{{opacity:0;transform:translateY(14px)}}to{{opacity:1;transform:none}}}}
   .top-row {{ display:flex; align-items:flex-start; gap:2rem; flex-wrap:wrap; }}
+  @media (max-width: 600px) {{
+    .top-row {{ flex-direction:column; align-items:center; gap:1rem; }}
+    .verdict-col {{ min-width:0 !important; width:100%; }}
+    .meta-grid {{ grid-template-columns: repeat(2,1fr) !important; }}
+    .result-card {{ padding:1rem 0.85rem; }}
+    .rec-item {{ font-size:0.82rem; white-space:normal; word-break:break-word; }}
+    .badge {{ flex-wrap:wrap; }}
+  }}
   .ring-col {{ display:flex; flex-direction:column; align-items:center; flex-shrink:0; }}
   .verdict-col {{ flex:1; min-width:220px; }}
   .badge {{
