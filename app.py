@@ -484,10 +484,10 @@ def render_full_result(result: dict) -> None:
 
     # ── Use st.components to render the full result card (SVG safe) ───────────
     # Dynamic height: base + extras for keywords and recommendations
-    _kw_rows  = max(1, len(kws) // 3)       # more rows on narrow screens
+    _kw_rows  = max(1, len(kws) // 4)
     _rec_rows = len(recs)
     _url_rows = len(url_detail_items) if url_detail_items else 0
-    _height   = 560 + (_kw_rows * 44) + (_rec_rows * 64) + (_url_rows * 50)
+    _height   = 480 + (_kw_rows * 36) + (_rec_rows * 52) + (_url_rows * 44)
 
     import streamlit.components.v1 as components
     components.html(f"""
@@ -509,14 +509,6 @@ def render_full_result(result: dict) -> None:
   }}
   @keyframes resultFadeIn{{from{{opacity:0;transform:translateY(14px)}}to{{opacity:1;transform:none}}}}
   .top-row {{ display:flex; align-items:flex-start; gap:2rem; flex-wrap:wrap; }}
-  @media (max-width: 600px) {{
-    .top-row {{ flex-direction:column; align-items:center; gap:1rem; }}
-    .verdict-col {{ min-width:0 !important; width:100%; }}
-    .meta-grid {{ grid-template-columns: repeat(2,1fr) !important; }}
-    .result-card {{ padding:1rem 0.85rem; }}
-    .rec-item {{ font-size:0.82rem; white-space:normal; word-break:break-word; }}
-    .badge {{ flex-wrap:wrap; }}
-  }}
   .ring-col {{ display:flex; flex-direction:column; align-items:center; flex-shrink:0; }}
   .verdict-col {{ flex:1; min-width:220px; }}
   .badge {{
@@ -696,7 +688,7 @@ _nav_items_html = ""
 for key, label in NAV_ITEMS:
     active_cls = "cl-nav-active" if cur == key else ""
     icon_svg   = NAV_ICONS.get(key, "")
-    _nav_items_html += f'''<div class="cl-nav-item {active_cls}" data-label="{label}" onclick="navClick(this, '{label}')">
+    _nav_items_html += f'''<div class="cl-nav-item {active_cls}" onclick="navClick(this,'{label}')">
         <div class="cl-nav-icon">{icon_svg}</div>
         <div class="cl-nav-label">{label}</div>
     </div>'''
@@ -796,6 +788,27 @@ body{{background:#020409;font-family:'Rajdhani',sans-serif;overflow:hidden}}
 }}
 .cl-nav-icon{{line-height:1;display:flex;align-items:center;justify-content:center}}
 .cl-nav-label{{font-family:'Rajdhani',sans-serif;font-size:.6rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}}
+
+/* ── MOBILE ONLY: swipe nav ── */
+@media(max-width:768px){{
+  .cl-nav-row{{
+    overflow-x:auto !important;
+    overflow-y:visible !important;
+    -webkit-overflow-scrolling:touch !important;
+    scrollbar-width:none !important;
+    flex-wrap:nowrap !important;
+  }}
+  .cl-nav-row::-webkit-scrollbar{{display:none}}
+  .cl-nav-item{{
+    flex:0 0 auto !important;
+    min-width:68px !important;
+  }}
+  .cl-ticker-wrap{{display:none !important}}
+  .cl-topbar{{padding:0 0.75rem !important;height:52px !important}}
+  .cl-brand-name{{font-size:0.82rem !important}}
+  .cl-brand-icon{{width:30px !important;height:30px !important;font-size:0.9rem !important}}
+  .cl-status{{font-size:0.6rem !important;padding:0.2rem 0.6rem !important}}
+}}
 </style>
 </head>
 <body>
@@ -842,29 +855,21 @@ body{{background:#020409;font-family:'Rajdhani',sans-serif;overflow:hidden}}
 </div>
 
 <script>
-var _navLock = false;
-function navClick(el, label) {{
-  if (_navLock) return;
-  _navLock = true;
-  // Visually mark active immediately
-  document.querySelectorAll('.cl-nav-item').forEach(function(n) {{
-    n.classList.remove('cl-nav-active');
-  }});
+var _navLock=false;
+function navClick(el,label){{
+  if(_navLock)return;
+  _navLock=true;
+  document.querySelectorAll('.cl-nav-item').forEach(function(n){{n.classList.remove('cl-nav-active')}});
   el.classList.add('cl-nav-active');
-  // Find and click the hidden Streamlit button safely
-  try {{
-    var btns = window.parent.document.querySelectorAll('button');
-    for (var i = 0; i < btns.length; i++) {{
-      if (btns[i].innerText.trim() === label) {{
-        btns[i].click();
-        break;
-      }}
+  try{{
+    var btns=window.parent.document.querySelectorAll('button');
+    for(var i=0;i<btns.length;i++){{
+      if(btns[i].innerText.trim()===label){{btns[i].click();break;}}
     }}
-  }} catch(e) {{}}
-  setTimeout(function() {{ _navLock = false; }}, 800);
+  }}catch(e){{}}
+  setTimeout(function(){{_navLock=false;}},800);
 }}
 </script>
-
 </body></html>
 """, height=130, scrolling=False)
 
@@ -1005,32 +1010,19 @@ body{background:transparent;}
 </style>
 </head><body>
 <div class="grid">
-  <div class="card" onclick="safeNav('AI Analyzer')">
+  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='AI Analyzer')b.click()})">
     <div class="card-emoji">&#x1F52C;</div><div class="card-name">AI ANALYZER</div>
   </div>
-  <div class="card" onclick="safeNav('URL Scanner')">
+  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='URL Scanner')b.click()})">
     <div class="card-emoji">&#x1F310;</div><div class="card-name">URL SCANNER</div>
   </div>
-  <div class="card" onclick="safeNav('QR Scanner')">
+  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='QR Scanner')b.click()})">
     <div class="card-emoji">&#x1F4F7;</div><div class="card-name">QR SCANNER</div>
   </div>
-  <div class="card" onclick="safeNav('Company Verify')">
+  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='Company Verify')b.click()})">
     <div class="card-emoji">&#x1F3E2;</div><div class="card-name">COMPANY VERIFIER</div>
   </div>
 </div>
-<script>
-var _lock=false;
-function safeNav(label){
-  if(_lock)return;_lock=true;
-  try{
-    var btns=window.parent.document.querySelectorAll('button');
-    for(var i=0;i<btns.length;i++){
-      if(btns[i].innerText.trim()===label){btns[i].click();break;}
-    }
-  }catch(e){}
-  setTimeout(function(){_lock=false;},800);
-}
-</script>
 </body></html>
 """, height=130)
 
