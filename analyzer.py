@@ -1,0 +1,373 @@
+# analyzer.py — CyberLens AI
+# High-level analysis wrappers used by app.py
+
+import io
+import os
+import re
+import time
+import numpy as np
+import pytesseract
+
+# ── Cross-platform Tesseract path ───────────────────────────────────────────────
+_WIN_TESS = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+if os.name == 'nt' and os.path.exists(_WIN_TESS):
+    pytesseract.pytesseract.tesseract_cmd = _WIN_TESS
+# On Linux/Mac, tesseract is expected to be on PATH (installed via apt/brew)
+
+from utils import (
+    score_keywords, compute_risk_level, normalise_score,
+    analyse_url, analyse_recruiter_email, analyse_company_name,
+    SCAM_KEYWORDS,
+)
+from ml_model import predict as ml_predict, get_feature_importance
+from language_utils import detect_and_translate
+
+# ─── Shared Recommendation Bank ─────────────────────────────────────────────────
+
+_RECS = {
+    'CRITICAL': [
+        '🚨 Do NOT respond to or engage with this message.',
+        '🔒 Never share personal information, bank details, or OTPs.',
+        '📢 Report this to cybercrime.gov.in or your local cyber cell.',
+        '🗑️  Block and delete the sender immediately.',
+        '🔍 Warn others in your network about this scam.',
+    ],
+    'HIGH': [
+        '⚠️  Exercise extreme caution — multiple red flags detected.',
+        '🔎 Independently verify the company via official channels.',
+        '💳 Never pay any fee to secure a job or internship.',
+        '📞 Call the company directly using a number from their official website.',
+        '📧 Check if the email domain matches the official company domain.',
+    ],
+    'MEDIUM': [
+        '🧐 Treat with moderate caution — some suspicious elements found.',
+        '🔍 Research the company on LinkedIn and Glassdoor.',
+        '❓ Ask for an official offer letter on company letterhead.',
+        '🏦 Never transfer money without verified paperwork.',
+    ],
+    'LOW': [
+        '✅ Low risk — still perform basic due diligence.',
+        '🔍 Cross-check recruiter details on LinkedIn.',
+        '📋 Request a formal job description and offer letter.',
+    ],
+    'SAFE': [
+        '✅ Content appears legitimate.',
+        '📝 Keep documentation of all communications.',
+        '🔒 Always protect your personal information.',
+    ],
+}
+
+def get_recommendations(level: str) -> list:
+    return _RECS.get(level, _RECS['SAFE'])
+
+
+# ─── Text / Message Analysis ─────────────────────────────────────────────────────
+
+def analyse_text(text: str) -> dict:
+    """
+    Full pipeline: language detection → translation → ML prediction +
+    keyword heuristics → combined risk score.
+    """
+    if not text or not text.strip():
+        return {'error': 'No text provided'}
+
+    # ── Multilingual: detect language and translate to English ──────────────────
+    lang_result   = detect_and_translate(text)
+    analysis_text = lang_result['translated_text']   # English (or original if en/unknown)
+
+    # ML prediction (always on English text)
+    ml_result    = ml_predict(analysis_text)
+    ml_scam_prob = ml_result['probability']   # 0–1
+
+    # Keyword heuristics (on translated/English text)
+    kw_result  = score_keywords(analysis_text)
+    kw_raw     = kw_result['score']
+    kw_norm    = normalise_score(kw_raw, ceiling=30.0)   # 0–100
+
+    # Blend: 55% ML + 45% keyword heuristic
+    blended = (ml_scam_prob * 100 * 0.55) + (kw_norm * 0.45)
+    blended = min(round(blended, 1), 100.0)
+
+    risk_info   = compute_risk_level(blended)
+    level       = risk_info['level']
+    confidence  = round(ml_result['confidence'] * 100, 1)
+
+    # Top TF-IDF features for explainability
+    top_features = get_feature_importance(text, top_n=8)
+    feature_words = [f[0] for f in top_features]
+
+    # Merge with keyword hits for display
+    all_suspicious = list(set(kw_result['found'] + feature_words))[:12]
+
+    verdict = (
+        'This content shows strong indicators of a scam or phishing attempt.'
+        if level in ('CRITICAL', 'HIGH') else
+        'This content contains some suspicious elements worth investigating.'
+        if level == 'MEDIUM' else
+        'This content appears largely legitimate but warrants basic verification.'
+        if level == 'LOW' else
+        'This content appears safe with no significant threat indicators detected.'
+    )
+
+    return {
+        'risk_score':       blended,
+        'confidence':       confidence,
+        'ml_probability':   round(ml_scam_prob * 100, 1),
+        'risk_level':       level,
+        'risk_color':       risk_info['color'],
+        'risk_emoji':       risk_info['emoji'],
+        'verdict':          verdict,
+        'suspicious_kws':   all_suspicious,
+        'keyword_hits':     kw_result['found'],
+        'recommendations':  get_recommendations(level),
+        'ml_label':         ml_result['label'],
+        'scan_type':        'Text Analysis',
+        # ── Language info ──────────────────────────────────────────────────────
+        'lang_code':        lang_result['lang_code'],
+        'lang_name':        lang_result['lang_name'],
+        'lang_native':      lang_result['native_name'],
+        'lang_flag':        lang_result['flag'],
+        'lang_confidence':  lang_result['confidence'],
+        'was_translated':   lang_result['was_translated'],
+        'translated_text':  lang_result['translated_text'],
+        'original_text':    lang_result['original_text'],
+        'translation_method': lang_result['translation_method'],
+        'translation_success': lang_result['translation_success'],
+        'translation_error': lang_result.get('translation_error'),
+    }
+
+
+# ─── URL Analysis ─────────────────────────────────────────────────────────────────
+
+def analyse_url_full(url: str) -> dict:
+    """Wrap utils.analyse_url with a friendly result envelope."""
+    if not url or not url.strip():
+        return {'error': 'No URL provided'}
+
+    base = analyse_url(url)
+    rs   = base['risk_score']
+    ri   = base['risk_level']
+
+    indicators = []
+    if not base['is_https']:        indicators.append('No HTTPS encryption')
+    if base['has_ip']:              indicators.append('IP address as domain')
+    if base['is_long']:             indicators.append('Abnormally long URL')
+    if base['suspicious_kw']:       indicators.append(f"Phishing keywords: {', '.join(base['suspicious_kw'][:4])}")
+    if base['tld_risk']:            indicators.append(f"High-risk TLD: {base['tld']}")
+    if base['typosquat_risk']:      indicators.append('Possible typosquatting of known brand')
+    if base['is_known_legit']:      indicators.append('Domain matches known legitimate site')
+
+    verdict = (
+        f"This URL shows {len(indicators)} phishing indicator(s) and is likely malicious."
+        if rs >= 65 else
+        f"This URL has some suspicious characteristics ({len(indicators)} flag(s))."
+        if rs >= 30 else
+        'This URL appears relatively safe, but always verify the source.'
+    )
+
+    return {
+        **base,
+        'risk_level':      ri['level'],
+        'risk_color':      ri['color'],
+        'risk_emoji':      ri['emoji'],
+        'verdict':         verdict,
+        'indicators':      indicators,
+        'suspicious_kws':  base['suspicious_kw'],
+        'recommendations': get_recommendations(ri['level']),
+        'confidence':      min(90, 50 + rs // 2),
+        'scan_type':       'URL Scanner',
+    }
+
+
+# ─── QR Code Analysis ─────────────────────────────────────────────────────────────
+
+def analyse_qr(image_bytes: bytes) -> dict:
+    """Decode a QR code from image bytes and analyse the extracted URL/text."""
+    try:
+        import cv2
+        from PIL import Image
+        import numpy as np
+
+        pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        cv_img  = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+        # ── Try OpenCV QRCodeDetector first ─────────────────────────────────────
+        qr_detector = cv2.QRCodeDetector()
+        qr_data, bbox, _ = qr_detector.detectAndDecode(cv_img)
+
+        # ── Fallback: try WeChatQRCode if available (more robust) ───────────────
+        if not qr_data:
+            try:
+                wechat_detector = cv2.wechat_qrcode_WeChatQRCode()
+                texts, _ = wechat_detector.detectAndDecode(cv_img)
+                if texts:
+                    qr_data = texts[0]
+            except Exception:
+                pass
+
+        # ── Final fallback: try grayscale + threshold to improve detection ───────
+        if not qr_data:
+            gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            gray_3ch = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+            qr_data, bbox, _ = qr_detector.detectAndDecode(gray_3ch)
+
+        if not qr_data:
+            return {'error': 'No QR code detected in the image. Please ensure the QR code is clear, well-lit, and not blurry.'}
+
+        qr_type = 'QRCODE'   # OpenCV only decodes QR codes (not barcodes)
+
+        # Determine if it's a URL
+        is_url  = qr_data.startswith(('http://', 'https://')) or '.' in qr_data.split('/')[0]
+        result  = {'qr_data': qr_data, 'qr_type': qr_type, 'is_url': is_url}
+
+        if is_url:
+            url_result = analyse_url_full(qr_data)
+            result.update(url_result)
+        else:
+            text_result = analyse_text(qr_data)
+            result.update(text_result)
+
+        result['scan_type'] = 'QR Scanner'
+        return result
+
+    except ImportError as e:
+        return {'error': f'OpenCV not installed: {e}. Install with: pip install opencv-python-headless'}
+    except Exception as e:
+        return {'error': f'QR analysis failed: {str(e)}'}
+
+
+# ─── OCR Analysis ─────────────────────────────────────────────────────────────────
+
+def analyse_ocr_image(image_bytes: bytes) -> dict:
+    """Extract text via OCR, then run scam analysis on the extracted content."""
+    try:
+        import pytesseract
+        from PIL import Image
+
+        pil_img     = Image.open(io.BytesIO(image_bytes))
+        extracted   = pytesseract.image_to_string(pil_img).strip()
+
+        if not extracted:
+            return {'error': 'No text could be extracted from this image. Ensure the image is clear and contains readable text.'}
+
+        analysis = analyse_text(extracted)
+        analysis['extracted_text'] = extracted
+        analysis['char_count']     = len(extracted)
+        analysis['word_count']     = len(extracted.split())
+        analysis['scan_type']      = 'OCR Scanner'
+        return analysis
+
+    except ImportError as e:
+        return {'error': f'pytesseract not installed or Tesseract binary missing: {e}'}
+    except Exception as e:
+        return {'error': f'OCR failed: {str(e)}'}
+
+
+# ─── PDF Analysis ─────────────────────────────────────────────────────────────────
+
+def analyse_pdf(pdf_bytes: bytes) -> dict:
+    """Extract text from PDF (first 3000 chars) and run scam analysis."""
+    try:
+        import pdfplumber
+
+        text_pages  = []
+        page_count  = 0
+
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            page_count = len(pdf.pages)
+            for page in pdf.pages:
+                pt = page.extract_text()
+                if pt:
+                    text_pages.append(pt)
+                if sum(len(t) for t in text_pages) >= 3000:
+                    break
+
+        full_text = '\n'.join(text_pages)[:3000]
+
+        if not full_text.strip():
+            return {'error': 'No readable text found in this PDF (it may be scanned or image-only).'}
+
+        analysis = analyse_text(full_text)
+        analysis['page_count']    = page_count
+        analysis['word_count']    = len(full_text.split())
+        analysis['char_count']    = len(full_text)
+        analysis['preview_text']  = full_text[:500]
+        analysis['scan_type']     = 'PDF Scanner'
+        return analysis
+
+    except ImportError:
+        # Fallback to PyPDF2
+        try:
+            import PyPDF2
+            reader     = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+            page_count = len(reader.pages)
+            texts      = []
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    texts.append(t)
+            full_text = '\n'.join(texts)[:3000]
+            if not full_text.strip():
+                return {'error': 'No text extracted from PDF.'}
+            analysis = analyse_text(full_text)
+            analysis['page_count']   = page_count
+            analysis['word_count']   = len(full_text.split())
+            analysis['char_count']   = len(full_text)
+            analysis['preview_text'] = full_text[:500]
+            analysis['scan_type']    = 'PDF Scanner'
+            return analysis
+        except Exception as e2:
+            return {'error': f'PDF extraction failed: {e2}'}
+    except Exception as e:
+        return {'error': f'PDF analysis failed: {str(e)}'}
+
+
+# ─── Company / Recruiter Verification ─────────────────────────────────────────────
+
+def analyse_company(name: str, email: str, website: str) -> dict:
+    """Holistic company/recruiter legitimacy check."""
+    parts = []
+
+    company_result   = analyse_company_name(name)
+    recruiter_result = analyse_recruiter_email(email) if email else None
+    url_result       = analyse_url_full(website) if website else None
+
+    # Aggregate risk
+    scores = [company_result['risk_score']]
+    if recruiter_result:
+        scores.append(70 if recruiter_result['is_free_mail'] else 10)
+    if url_result:
+        scores.append(url_result.get('risk_score', 0))
+
+    combined = round(sum(scores) / len(scores), 1)
+    ri       = compute_risk_level(combined)
+
+    flags = company_result['suspicious_terms'][:]
+    if recruiter_result and recruiter_result['is_free_mail']:
+        flags.append(f"Free-mail domain used: {recruiter_result['domain']}")
+    if url_result and url_result.get('flags'):
+        flags.extend(url_result['flags'])
+
+    return {
+        'risk_score':        combined,
+        'risk_level':        ri['level'],
+        'risk_color':        ri['color'],
+        'risk_emoji':        ri['emoji'],
+        'confidence':        min(90, 40 + int(combined)),
+        'company_analysis':  company_result,
+        'recruiter_analysis':recruiter_result,
+        'url_analysis':      url_result,
+        'flags':             flags,
+        'suspicious_kws':    flags[:8],
+        'recommendations':   get_recommendations(ri['level']),
+        'verdict': (
+            'This company/recruiter profile shows serious red flags of fraud.'
+            if combined >= 65 else
+            'Some suspicious elements detected. Verify through official channels.'
+            if combined >= 35 else
+            'Profile appears largely legitimate.'
+        ),
+        'scan_type': 'Company Verifier',
+        'trust_score': max(0, 100 - int(combined)),
+    }

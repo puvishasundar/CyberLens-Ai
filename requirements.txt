@@ -1,0 +1,19 @@
+streamlit>=1.32.0
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+nltk>=3.8.1
+plotly>=5.17.0
+Pillow>=10.0.0
+pdfplumber>=0.10.3
+PyPDF2>=3.0.0
+validators>=0.22.0
+tldextract>=5.1.1
+opencv-python-headless>=4.8.0
+pytesseract>=0.3.10
+joblib>=1.3.0
+requests>=2.31.0
+# ── Multilingual support ────────────────────────────────────────────────────────
+langdetect>=1.0.9          # Offline language detection (no API key needed)
+googletrans==4.0.0rc1      # Free Google Translate (unofficial, no key)
+deep-translator>=1.11.4    # Fallback translation library
