@@ -339,20 +339,16 @@ def score_keywords(text: str) -> dict:
 
 
 def compute_risk_level(score: float) -> dict:
-    """
-    Map a 0–100 risk score to a threat level label.
-    """
-    if score >= 85:
+    if score >= 81:
         return {'level': 'CRITICAL', 'color': '#ef4444', 'emoji': '🔴'}
-    elif score >= 65:
+    elif score >= 61:
         return {'level': 'HIGH',     'color': '#f59e0b', 'emoji': '🟠'}
-    elif score >= 40:
+    elif score >= 41:
         return {'level': 'MEDIUM',   'color': '#f59e0b', 'emoji': '🟡'}
-    elif score >= 20:
+    elif score >= 21:
         return {'level': 'LOW',      'color': '#3b82f6', 'emoji': '🔵'}
     else:
         return {'level': 'SAFE',     'color': '#10b981', 'emoji': '🟢'}
-
 
 def normalise_score(raw: float, ceiling: float = 20.0) -> float:
     """Map a raw keyword score (0 → ceiling+) to 0–100 linearly.
