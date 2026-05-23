@@ -15,6 +15,7 @@
 
 import re
 import unicodedata
+import streamlit as st
 
 # ─── Language Metadata ──────────────────────────────────────────────────────────
 
@@ -220,6 +221,7 @@ def translate_to_english(text: str, src_lang: str) -> dict:
 
 # ─── Combined: Detect + Translate ─────────────────────────────────────────────
 
+@st.cache_data(max_entries=256)
 def detect_and_translate(text: str) -> dict:
     """
     Full pipeline: detect language → translate to English if needed.

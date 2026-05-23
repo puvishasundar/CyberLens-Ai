@@ -16,6 +16,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import nltk
+import streamlit as st
 
 from sklearn.feature_extraction.text  import TfidfVectorizer
 from sklearn.linear_model             import LogisticRegression, SGDClassifier
@@ -74,29 +75,24 @@ def rule_based_scam_score(text: str) -> float:
     return round(min(1.0 - (1.0 / (1.0 + hits * 1.3)), 0.98), 4)
 
 # ─── Text Preprocessing ─────────────────────────────────────────────────────────
-_STOP_WORDS  = None
-_LEMMATIZER  = None
 
+@st.cache_resource
 def get_stop_words():
-    global _STOP_WORDS
-    if _STOP_WORDS is None:
-        try:
-            from nltk.corpus import stopwords
-            _STOP_WORDS = set(stopwords.words('english'))
-        except Exception:
-            _STOP_WORDS = set()
-    return _STOP_WORDS
+    try:
+        from nltk.corpus import stopwords
+        return set(stopwords.words('english'))
+    except Exception:
+        return set()
 
+@st.cache_resource
 def get_lemmatizer():
-    global _LEMMATIZER
-    if _LEMMATIZER is None:
-        try:
-            from nltk.stem import WordNetLemmatizer
-            _LEMMATIZER = WordNetLemmatizer()
-        except Exception:
-            _LEMMATIZER = None
-    return _LEMMATIZER
+    try:
+        from nltk.stem import WordNetLemmatizer
+        return WordNetLemmatizer()
+    except Exception:
+        return None
 
+@st.cache_data(max_entries=512)
 def preprocess_text(text: str) -> str:
     """Clean, normalise, lemmatise text for ML pipeline."""
     if not isinstance(text, str):
@@ -243,35 +239,32 @@ def train_model(data_path: str = DATA_PATH) -> dict:
     }
 
 # ─── Inference ──────────────────────────────────────────────────────────────────
-_artifact_cache = None
 
+@st.cache_resource
 def load_artifact():
-    """Load (or train-and-save) the ML artifact, with in-memory caching."""
-    global _artifact_cache
-    if _artifact_cache is not None:
-        return _artifact_cache
+    """Load (or train-and-save) the ML artifact. Cached for the lifetime of the server process."""
 
     if os.path.exists(MODEL_PATH):
         try:
-            _artifact_cache = joblib.load(MODEL_PATH)
+            artifact = joblib.load(MODEL_PATH)
             # backward-compat: v1 saved the pipeline directly
-            if not isinstance(_artifact_cache, dict):
-                _artifact_cache = {'pipeline': _artifact_cache, 'threshold': 0.5}
-            return _artifact_cache
+            if not isinstance(artifact, dict):
+                artifact = {'pipeline': artifact, 'threshold': 0.5}
+            return artifact
         except Exception:
             pass
 
     if os.path.exists(DATA_PATH):
         try:
             result = train_model()
-            _artifact_cache = {'pipeline': result['pipeline'], 'threshold': result['threshold']}
-            return _artifact_cache
+            return {'pipeline': result['pipeline'], 'threshold': result['threshold']}
         except Exception as e:
             print(f"[ml_model] Warning: training failed: {e}")
 
     return None
 
 
+@st.cache_data(max_entries=256)
 def predict(text: str) -> dict:
     """
     Predict whether a piece of text is a scam.
