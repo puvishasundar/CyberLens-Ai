@@ -330,7 +330,7 @@ _localS  = LocalStorage()
 
 # ── Read persisted stats from browser localStorage ───────────────
 if "stats" not in st.session_state:
-    _stored = _localS.getItem(_LS_KEY)
+    _stored = _localS.getItem(_LS_KEY, key="_ls_get_init")
     if isinstance(_stored, dict):
         st.session_state.stats = _stored
     elif isinstance(_stored, str) and _stored.strip().startswith("{"):
@@ -341,25 +341,28 @@ if "stats" not in st.session_state:
     else:
         st.session_state.stats = make_empty_stats()
 
-if "current_page" not in st.session_state: st.session_state.current_page = "Dashboard"
-if "result_text"  not in st.session_state: st.session_state.result_text  = None
-if "result_ocr"   not in st.session_state: st.session_state.result_ocr   = None
-if "result_pdf"   not in st.session_state: st.session_state.result_pdf   = None
-if "result_url"   not in st.session_state: st.session_state.result_url   = None
-if "result_qr"    not in st.session_state: st.session_state.result_qr    = None
-if "result_co"    not in st.session_state: st.session_state.result_co    = None
+if "current_page"  not in st.session_state: st.session_state.current_page  = "Dashboard"
+if "result_text"   not in st.session_state: st.session_state.result_text   = None
+if "result_ocr"    not in st.session_state: st.session_state.result_ocr    = None
+if "result_pdf"    not in st.session_state: st.session_state.result_pdf    = None
+if "result_url"    not in st.session_state: st.session_state.result_url    = None
+if "result_qr"     not in st.session_state: st.session_state.result_qr     = None
+if "result_co"     not in st.session_state: st.session_state.result_co     = None
+if "_ls_key_ctr"   not in st.session_state: st.session_state._ls_key_ctr   = 0
 
 
 def _save_to_localstorage(stats: dict) -> None:
     """Save scan history to this browser's localStorage only.
     Private to this device — no URL params, no server files."""
-    _localS.setItem(_LS_KEY, stats)
+    st.session_state._ls_key_ctr += 1
+    _localS.setItem(_LS_KEY, stats, key=f"_ls_set_{st.session_state._ls_key_ctr}")
 
 
 def _clear_localstorage() -> None:
     """Wipe this user's CyberLens history from localStorage only."""
     try:
-        _localS.deleteItem(_LS_KEY)
+        st.session_state._ls_key_ctr += 1
+        _localS.deleteItem(_LS_KEY, key=f"_ls_del_{st.session_state._ls_key_ctr}")
     except (KeyError, Exception):
         pass
 
