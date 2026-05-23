@@ -330,7 +330,7 @@ _localS  = LocalStorage()
 
 # ── Read persisted stats from browser localStorage ───────────────
 if "stats" not in st.session_state:
-    _stored = _localS.getItem(_LS_KEY, key="_ls_get_init")
+    _stored = _localS.getItem(_LS_KEY)
     if isinstance(_stored, dict):
         st.session_state.stats = _stored
     elif isinstance(_stored, str) and _stored.strip().startswith("{"):
