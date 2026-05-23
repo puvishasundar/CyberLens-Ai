@@ -70,8 +70,8 @@ def rule_based_scam_score(text: str) -> float:
     hits = sum(1 for r in _SCAM_RE if r.search(text))
     if hits == 0:
         return 0.0
-    # Sigmoid-style: 1 hit → ~0.55, 2 hits → ~0.82, 3+ hits → ~0.95+
-    return round(min(1.0 - (1.0 / (1.0 + hits * 0.9)), 0.98), 4)
+    # Sigmoid-style: 1 hit → ~0.57, 2 hits → ~0.72 (triggers stronger blend), 3+ → ~0.92+
+    return round(min(1.0 - (1.0 / (1.0 + hits * 1.3)), 0.98), 4)
 
 # ─── Text Preprocessing ─────────────────────────────────────────────────────────
 _STOP_WORDS  = None
@@ -304,13 +304,13 @@ def predict(text: str) -> dict:
     proba    = pipeline.predict_proba([clean])[0]     # [p_legit, p_scam]
     ml_prob  = float(proba[1])
 
-    # ── Hard override: if 2+ strong rule hits, trust rules more than ML ───────────
+    # ── Hard override: if 2+ strong rule hits, lean heavily on rules ───────────────
     # This handles novel scam text the model hasn't been trained on.
     if rule_score >= 0.70:
-        blended_prob = round(0.40 * ml_prob + 0.60 * rule_score, 4)
+        blended_prob = round(0.35 * ml_prob + 0.65 * rule_score, 4)
     else:
-        # Balanced blend: 60% ML + 40% rules (was 70/30 — rules were underweighted)
-        blended_prob = round(0.60 * ml_prob + 0.40 * rule_score, 4)
+        # Balanced 50/50: neither source dominates on uncertain signals
+        blended_prob = round(0.50 * ml_prob + 0.50 * rule_score, 4)
 
     label = 'scam' if blended_prob >= threshold else 'legitimate'
 

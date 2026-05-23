@@ -79,13 +79,17 @@ def analyse_text(text: str) -> dict:
     ml_result    = ml_predict(analysis_text)
     ml_scam_prob = ml_result['probability']   # 0–1
 
-    # Keyword heuristics (on translated/English text)
-    kw_result  = score_keywords(analysis_text)
-    kw_raw     = kw_result['score']
-    kw_norm    = normalise_score(kw_raw, ceiling=30.0)   # 0–100
+    # Keyword heuristics — run on BOTH original and translated text, take the higher score.
+    # This ensures India-specific terms (aadhaar, pan card, kyc) are not lost in translation.
+    kw_translated = score_keywords(analysis_text)
+    kw_original   = score_keywords(lang_result['original_text'])
+    kw_result     = kw_translated if kw_translated['score'] >= kw_original['score'] else kw_original
+    kw_raw        = kw_result['score']
+    kw_norm       = normalise_score(kw_raw, ceiling=20.0)   # ceiling matches utils.py default
 
-    # Blend: 55% ML + 45% keyword heuristic
-    blended = (ml_scam_prob * 100 * 0.55) + (kw_norm * 0.45)
+    # Blend: 45% ML + 55% keyword heuristic.
+    # Keywords are hand-crafted scam signals and more reliable than a small-data ML model.
+    blended = (ml_scam_prob * 100 * 0.45) + (kw_norm * 0.55)
     blended = min(round(blended, 1), 100.0)
 
     risk_info   = compute_risk_level(blended)
