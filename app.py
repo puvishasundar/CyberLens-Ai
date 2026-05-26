@@ -969,7 +969,7 @@ if selected == "Dashboard":
         </div>
         <div class="cyber-title" style="margin-bottom:0.5rem">CyberLens AI</div>
         <div class="cyber-subtitle" style="margin-bottom:1.25rem">
-            Real-time AI-powered scam &amp; phishing detection platform
+             Multimodal AI Platform for Real-Time Cyber Scam Detection
         </div>
         <div style="display:flex;align-items:center;justify-content:center;gap:0.5rem;flex-wrap:wrap">
             <span class="badge-active">● Intelligence Engine Active</span>
@@ -1767,6 +1767,6 @@ elif selected == "About":
         Built with Python · Streamlit · scikit-learn · NLTK · Plotly<br><br>
         <span style="color:var(--primary);font-family:var(--font-display);
                      font-size:0.65rem;letter-spacing:0.15em">CYBERLENS AI</span>
-        &nbsp;—&nbsp; Data Science Project by Puvisha , Vidhya , Hemanthika
+        &nbsp;—&nbsp; Data Science Project by Puvisha S , Vidhya Priya P , Hemanthika M
     </div>
     ''')
