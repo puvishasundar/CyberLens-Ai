@@ -89,9 +89,17 @@ def analyse_text(text: str) -> dict:
 
     # Blend: 45% ML + 55% keyword heuristic.
     # Keywords are hand-crafted scam signals and more reliable than a small-data ML model.
-    blended = (ml_scam_prob * 100 * 0.45) + (kw_norm * 0.55)
-    blended = min(round(blended, 1), 100.0)
+# Confidence-aware blend: trust whichever signal is stronger.
+    if kw_norm >= 60:
+        ml_weight, kw_weight = 0.30, 0.70   # strong keyword signal → trust it
+    elif kw_norm <= 10:
+        ml_weight, kw_weight = 0.70, 0.30   # no keyword signal → lean on ML
+    else:
+        ml_weight, kw_weight = 0.45, 0.55   # ambiguous → current default
 
+    blended = (ml_scam_prob * 100 * ml_weight) + (kw_norm * kw_weight)
+    blended = min(round(blended, 1), 100.0)
+    
     risk_info   = compute_risk_level(blended)
     level       = risk_info['level']
     confidence  = round(ml_result['confidence'] * 100, 1)
