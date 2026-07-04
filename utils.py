@@ -312,7 +312,17 @@ SAFE_KEYWORDS = {
     'welcome aboard', 'employee onboarding', 'coding round',
     'assessment test', 'interview slot', 'review pending', 'workshop',
     'certificate', 'congratulations on selection', 'campus drive',
-    'team collaboration',
+    'team collaboration',"no registration fee","no processing fee","no joining fee",
+    "no payment required",
+    "no advance payment",
+    "no security deposit",
+    "no hidden charges",
+    "we never ask for otp",
+    "never ask for otp",
+    "never share your otp",
+    "official website",
+    "official email",
+    "official company website","free of cost"
 }
 
 PHISHING_URL_PATTERNS = [
@@ -340,26 +350,66 @@ SCAM_TLD_RISK = {
 
 def score_keywords(text: str) -> dict:
     text_lower = text.lower()
+
+    # Remove safe phrases first
+    for phrase in SAFE_PHRASES:
+        text_lower = text_lower.replace(phrase, "")
+
     found = {}
     total = 0
 
     for kw, weight in SCAM_KEYWORDS.items():
+
         for match in re.finditer(re.escape(kw), text_lower):
 
-            # Look at up to 20 characters before the keyword
-            context = text_lower[max(0, match.start()-20):match.start()]
+            # Look 4 words before keyword
+            before = text_lower[max(0, match.start()-35):match.start()]
 
-            # Ignore keywords preceded by negation
-            if any(word in context.split() for word in NEGATION_WORDS):
+            words = before.split()
+
+            # Ignore if negation exists
+            if any(word in NEGATION_WORDS for word in words):
                 continue
 
             found[kw] = weight
             total += weight
 
+    # -----------------------------
+    # Bonus scoring for combinations
+    # -----------------------------
+
+    combos = [
+
+        (["registration fee", "urgent"], 3),
+
+        (["registration fee", "immediately"], 3),
+
+        (["otp", "bank"], 4),
+
+        (["lottery", "claim"], 4),
+
+        (["kyc", "account blocked"], 5),
+
+        (["offer letter", "fee"], 5),
+
+        (["click here", "verify"], 4),
+
+        (["bitcoin", "investment"], 5),
+
+        (["work from home", "guaranteed"], 4),
+
+        (["gift card", "send"], 5)
+
+    ]
+
+    for keywords, bonus in combos:
+        if all(k in text_lower for k in keywords):
+            total += bonus
+
     return {
-        'score': total,
-        'found': list(found.keys()),
-        'details': found,
+        "score": total,
+        "found": list(found.keys()),
+        "details": found,
     }
 
 def compute_risk_level(score: float) -> dict:
