@@ -26,6 +26,19 @@ NEGATION_WORDS = {
     "official website",
     "official email",
     "verified company",
+    "free of cost",
+    "no registration fee",
+    "no processing fee",
+    "no joining fee",
+    "no payment required",
+    "no advance payment",
+    "no security deposit",
+    "no hidden charges",
+    "we never ask for otp",
+    "never ask for otp",
+    "never share your otp",
+    "official website",
+    "official email",
     "free of cost"
 }
 SCAM_KEYWORDS = {
@@ -312,7 +325,19 @@ SAFE_KEYWORDS = {
     'welcome aboard', 'employee onboarding', 'coding round',
     'assessment test', 'interview slot', 'review pending', 'workshop',
     'certificate', 'congratulations on selection', 'campus drive',
-    'team collaboration'
+    'team collaboration',    "no registration fee",
+    "no processing fee",
+    "no joining fee",
+    "no payment required",
+    "no advance payment",
+    "no security deposit",
+    "no hidden charges",
+    "we never ask for otp",
+    "never ask for otp",
+    "never share your otp",
+    "official website",
+    "official email",
+    "free of cost"
 }
 SAFE_PHRASES = [
     "no registration fee",
