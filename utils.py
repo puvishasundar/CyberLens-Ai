@@ -6,7 +6,28 @@ import math
 from urllib.parse import urlparse
 
 # ─── Suspicious Keyword Lexicon ─────────────────────────────────────────────────
-
+NEGATION_WORDS = {
+    "no",
+    "not",
+    "never",
+    "without",
+    "don't",
+    "doesn't",
+    "isn't",
+    "aren't",
+    "won't",
+    "free",
+    "no registration fee",
+    "no processing fee",
+    "no joining fee",
+    "no payment required",
+    "we never ask for otp",
+    "never share your password with anyone except",
+    "official website",
+    "official email",
+    "verified company",
+    "free of cost"
+}
 SCAM_KEYWORDS = {
     # Urgency / pressure
     'urgent': 3, 'immediate': 3, 'immediately': 3, 'limited offer': 3,
@@ -318,25 +339,28 @@ SCAM_TLD_RISK = {
 # ─── Risk Scoring ────────────────────────────────────────────────────────────────
 
 def score_keywords(text: str) -> dict:
-    """
-    Scan text for suspicious keywords.
-    Returns {'score': int, 'found': [str, ...], 'details': {word: weight}}.
-    """
     text_lower = text.lower()
-    found   = {}
-    total   = 0
+    found = {}
+    total = 0
 
     for kw, weight in SCAM_KEYWORDS.items():
-        if kw in text_lower:
+        for match in re.finditer(re.escape(kw), text_lower):
+
+            # Look at up to 20 characters before the keyword
+            context = text_lower[max(0, match.start()-20):match.start()]
+
+            # Ignore keywords preceded by negation
+            if any(word in context.split() for word in NEGATION_WORDS):
+                continue
+
             found[kw] = weight
-            total    += weight
+            total += weight
 
     return {
-        'score':   total,
-        'found':   list(found.keys()),
+        'score': total,
+        'found': list(found.keys()),
         'details': found,
     }
-
 
 def compute_risk_level(score: float) -> dict:
     if score >= 81:
