@@ -312,7 +312,12 @@ SAFE_KEYWORDS = {
     'welcome aboard', 'employee onboarding', 'coding round',
     'assessment test', 'interview slot', 'review pending', 'workshop',
     'certificate', 'congratulations on selection', 'campus drive',
-    'team collaboration',"no registration fee","no processing fee","no joining fee",
+    'team collaboration'
+}
+SAFE_PHRASES = [
+    "no registration fee",
+    "no processing fee",
+    "no joining fee",
     "no payment required",
     "no advance payment",
     "no security deposit",
@@ -322,9 +327,9 @@ SAFE_KEYWORDS = {
     "never share your otp",
     "official website",
     "official email",
-    "official company website","free of cost"
-}
-
+    "official company website",
+    "free of cost",
+]
 PHISHING_URL_PATTERNS = [
     r'login', r'signin', r'verify', r'secure', r'account', r'update',
     r'confirm', r'banking', r'paypal', r'amazon', r'google', r'microsoft',
