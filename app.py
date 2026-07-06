@@ -1744,12 +1744,11 @@ elif selected == "About":
     section_header("Future Vision", "🚀")
     st.write("")
     roadmap = [
-        ("🌐", "Real-time VirusTotal & Google Safe Browsing API integration"),
-        ("📧", "Email header analysis — SPF, DKIM, DMARC verification"),
-        ("🤗", "Fine-tuned BERT model for higher detection accuracy"),
-        ("📱", "Mobile-responsive PWA with push threat alerts"),
-        ("🌍", "✅ Multi-language scam detection — Tamil, Telugu, Malayalam, Kannada, Hindi, Spanish (Live)"),
-        ("🔔", "Telegram & Slack bot for real-time threat notifications"),
+     📱 Mobile Application – Develop a mobile-responsive application so users can detect scams anytime, anywhere.,
+     💬 AI Chatbot – Add a chatbot to guide users and answer questions about CyberLens AI and its features.,
+     🌍 Complete Multilingual Interface – Extend multilingual support from message analysis to the entire website interface.,
+     🎙️ Voice Scam Detection – Allow users to upload voice recordings or phone call audio for AI-based scam detection.,
+     👤 User Login & Personal Accounts – Introduce user accounts to securely save scan history, reports, and preferences.,
     ]
     for icon, item in roadmap:
         H(f'''
