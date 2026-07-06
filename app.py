@@ -1744,12 +1744,12 @@ elif selected == "About":
     section_header("Future Vision", "🚀")
     st.write("")
     roadmap = [
-     📱 Mobile Application – Develop a mobile-responsive application so users can detect scams anytime, anywhere.,
-     💬 AI Chatbot – Add a chatbot to guide users and answer questions about CyberLens AI and its features.,
-     🌍 Complete Multilingual Interface – Extend multilingual support from message analysis to the entire website interface.,
-     🎙️ Voice Scam Detection – Allow users to upload voice recordings or phone call audio for AI-based scam detection.,
-     👤 User Login & Personal Accounts – Introduce user accounts to securely save scan history, reports, and preferences.,
-    ]
+    ("📱", "Mobile Application – Develop a mobile-responsive application so users can detect scams anytime, anywhere."),
+    ("💬", "AI Chatbot – Guide users and answer questions about the website."),
+    ("🌍", "Complete multilingual website interface."),
+    ("🎙️", "Voice scam detection using uploaded audio recordings."),
+    ("👤", "User login and personal accounts to save scan history."),
+]
     for icon, item in roadmap:
         H(f'''
         <div style="display:flex;align-items:center;gap:1rem;padding:0.65rem 1rem;
