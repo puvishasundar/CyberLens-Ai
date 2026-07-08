@@ -288,6 +288,77 @@ SCAM_KEYWORDS = {
     'hiring database': 5, 'global hiring': 3,
     'activate today': 4, 'activate your account today': 4,
     'overseas salary': 4, 'foreign salary': 4,
+
+    # ── NEW: UPI-specific scam patterns ───────────────────────────────────────
+    'upi pin': 5, 'enter upi pin': 5, 'enter your upi pin': 5,
+    'upi pin to receive': 5, 'share upi pin': 5,
+    'collect request': 4, 'payment request': 4, 'approve request': 4,
+    'accept collect request': 5, 'scan to receive': 5, 'scan qr to receive': 5,
+    'scan this qr': 4, 'scan the qr code': 4, 'qr code payment': 3,
+    'qr to receive money': 5, 'qr for refund': 5, 'refund qr': 5,
+    'upi id blocked': 5, 'upi transaction failed': 4, 'upi deactivated': 5,
+    'gpay support': 4, 'phonepe support': 4, 'paytm support': 4,
+    'bhim upi': 3, 'upi mandate': 4, 'auto debit mandate': 4,
+    'money will be credited': 4, 'receive payment scan': 5,
+
+    # ── NEW: QR code scam patterns ────────────────────────────────────────────
+    'qr code expired': 4, 'update qr code': 4, 'new qr code': 3,
+    'scan and win': 5, 'scan to claim': 5, 'scan to unlock': 4,
+    'malicious qr': 3, 'qr code scam': 5,
+
+    # ── NEW: Electricity / utility bill scams ─────────────────────────────────
+    'electricity bill': 3, 'electricity bill due': 4, 'power bill overdue': 4,
+    'electricity disconnected': 5, 'power disconnection': 5,
+    'electricity disconnection tonight': 5, 'meter disconnected': 5,
+    'pay electricity bill immediately': 5, 'discom': 3, 'eb office': 3,
+    'update meter details': 4, 'smart meter update': 4,
+    'electricity board': 2, 'bill overdue': 3, 'last date to pay bill': 4,
+    'gas connection blocked': 4, 'water bill overdue': 3,
+
+    # ── NEW: Scholarship / education fee scams ────────────────────────────────
+    'scholarship approved': 5, 'scholarship selected': 4, 'scholarship offer': 4,
+    'scholarship fee': 5, 'processing fee for scholarship': 5,
+    'scholarship amount credited': 4, 'education loan approved': 4,
+    'fee waiver': 3, 'admission confirmed': 3, 'seat confirmed fee': 4,
+    'management quota': 3, 'nsp scholarship': 3, 'national scholarship portal': 2,
+    'university grant': 3, 'grant disbursement': 4, 'scholarship disbursement': 4,
+
+    # ── NEW: Online shopping / e-commerce scams ───────────────────────────────
+    'order cancelled refund': 4, 'order refund pending': 4,
+    'cash on delivery fraud': 4, 'fake order confirmation': 4,
+    'order not delivered': 3, 'wrong product refund': 3,
+    'return pickup fee': 4, 'exchange fee': 4, 'flipkart order': 2,
+    'amazon order': 2, 'myntra order': 2, 'meesho order': 2,
+    'huge discount today only': 4, 'flash sale': 2, 'mega sale 90% off': 4,
+    'fake online store': 5, 'suspicious checkout page': 4,
+    'pay to confirm order': 5, 'advance payment for delivery': 5,
+
+    # ── NEW: AI voice / deepfake scams ────────────────────────────────────────
+    'ai voice clone': 5, 'voice cloning': 5, 'cloned voice': 5,
+    'deepfake video': 5, 'deepfake call': 5, 'ai generated video': 4,
+    'fake video call': 5, 'video call from unknown officer': 5,
+    'this is your son': 4, 'this is your daughter': 4,
+    'emergency call from relative': 4, 'kidnapped': 4, 'accident emergency money': 5,
+    'voice message urgent': 4, 'synthetic voice': 4, 'ai impersonation': 5,
+
+    # ── NEW: Gaming and reward app scams ──────────────────────────────────────
+    'gaming reward': 4, 'game winning amount': 4, 'withdraw winnings': 4,
+    'rummy bonus': 4, 'ludo cash bonus': 4, 'betting app bonus': 4,
+    'fantasy app winnings': 4, 'app download bonus': 3,
+    'refer app earn cash': 4, 'task completion reward': 4,
+    'survey reward': 3, 'click and earn': 4, 'watch ad and earn': 3,
+    'spin and win': 4, 'daily check in reward': 3, 'redeem cash reward': 4,
+
+    # ── NEW: Fake customer care / helpline scams ──────────────────────────────
+    'customer care number': 3, 'toll free helpline': 3, 'fake customer care': 5,
+    'call this number for refund': 5, 'call this number to resolve': 4,
+    'complaint number': 3, 'escalation number': 3,
+    'talk to our agent': 3, 'connect with agent': 3,
+
+    # ── NEW: Referral / MLM scams ──────────────────────────────────────────────
+    'mlm scheme': 4, 'multi level marketing': 3, 'network marketing income': 4,
+    'refer 5 friends': 4, 'invite and earn': 4, 'downline income': 4,
+    'binary income plan': 5, 'join with small investment': 4,
 }
 
 

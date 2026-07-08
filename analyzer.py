@@ -167,6 +167,41 @@ SCAM_CONTENT_PHRASES = [
     "you have been selected", "free gift", "lottery winner",
     "otp verification required", "bank account blocked", "confirm your password",
     "unusual activity detected", "your account will be closed",
+    # ── NEW: UPI / QR content phrases ─────────────────────────────────────────
+    "enter your upi pin", "scan to receive", "scan qr to receive",
+    "accept collect request", "upi id blocked", "upi deactivated",
+    "scan and win", "scan to claim", "qr code expired",
+    # ── NEW: KYC / bank / digital arrest phrases ─────────────────────────────
+    "complete your kyc", "kyc expired", "aadhaar blocked", "pan card suspended",
+    "digital arrest", "arrest warrant", "cbi notice", "cyber crime notice",
+    "legal action will be taken", "court notice", "fir has been filed",
+    "income tax notice", "tds refund", "gst refund",
+    # ── NEW: Loan / investment / crypto phrases ──────────────────────────────
+    "pre-approved loan", "instant loan approved", "guaranteed returns",
+    "double your money", "risk free investment", "crypto trading signal",
+    "sure shot profit", "multibagger stock",
+    # ── NEW: Job / internship phrases ────────────────────────────────────────
+    "no interview required", "joining fee", "offer letter fee",
+    "work from home earning", "captcha typing job", "whatsapp hr",
+    # ── NEW: Courier / delivery phrases ──────────────────────────────────────
+    "customs clearance fee", "parcel on hold", "pay to release your parcel",
+    "delivery failed pay", "package will be destroyed",
+    # ── NEW: Electricity / utility phrases ───────────────────────────────────
+    "electricity disconnected tonight", "pay electricity bill immediately",
+    "power disconnection notice", "update your meter details",
+    # ── NEW: Scholarship / education phrases ─────────────────────────────────
+    "scholarship approved", "scholarship processing fee", "fee waiver offer",
+    # ── NEW: Online shopping phrases ─────────────────────────────────────────
+    "pay to confirm your order", "order refund pending", "huge discount today only",
+    "mega sale 90% off",
+    # ── NEW: AI voice / deepfake phrases ─────────────────────────────────────
+    "this is your son", "emergency accident money", "kidnapped call now",
+    "voice message urgent",
+    # ── NEW: Gaming / reward phrases ─────────────────────────────────────────
+    "withdraw your winnings", "refer app earn cash", "spin and win",
+    "click and earn daily",
+    # ── NEW: Fake customer care ──────────────────────────────────────────────
+    "call this number for refund", "fake customer care agent",
 ]
 
 def analyse_webpage_content(url: str, timeout: int = 6) -> dict:
