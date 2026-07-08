@@ -47,7 +47,13 @@ ensure_nltk()
 # ─── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'scam_detector.pkl')
-DATA_PATH  = os.path.join(BASE_DIR, 'sample_data.csv')
+
+# v3: primary training data is now scam.csv (user-supplied dataset).
+# sample_data.csv is kept as a legacy fallback so existing deployments
+# that haven't added scam.csv yet keep working unchanged.
+_SCAM_CSV_PATH   = os.path.join(BASE_DIR, 'scam.csv')
+_LEGACY_CSV_PATH = os.path.join(BASE_DIR, 'sample_data.csv')
+DATA_PATH  = _SCAM_CSV_PATH if os.path.exists(_SCAM_CSV_PATH) else _LEGACY_CSV_PATH
 
 # ─── Scam signal rules (high-precision heuristics) ──────────────────────────────
 # These patterns are near-certain indicators; used to boost confidence.
@@ -136,7 +142,10 @@ def train_model(data_path: str = DATA_PATH) -> dict:
     df['clean'] = df['text'].apply(preprocess_text)
 
     X = df['clean'].values
-    y = (df['label'] == 'scam').astype(int).values     # 1 = scam, 0 = legitimate
+    # Robust label mapping: accepts 'scam'/'phishing'/'spam'/1/'1' as positive class,
+    # so scam.csv can use slightly different label spellings than the old sample data.
+    _POSITIVE_LABELS = {'scam', 'phishing', 'spam', 'fraud', '1', 1, True}
+    y = df['label'].apply(lambda v: 1 if (str(v).strip().lower() in _POSITIVE_LABELS) else 0).values
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
