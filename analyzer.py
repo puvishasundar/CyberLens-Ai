@@ -22,6 +22,7 @@ from utils import (
     SCAM_KEYWORDS,
 )
 from ml_model import predict as ml_predict, get_feature_importance
+from url_model import predict_url as url_ml_predict
 from language_utils import detect_and_translate
 
 # ─── Shared Recommendation Bank ─────────────────────────────────────────────────
@@ -249,8 +250,23 @@ def analyse_url_full(url: str) -> dict:
     # Content-based signal is additive on top of the existing URL score, so the
     # original URL detection logic/weights above remain completely unchanged.
     content_bonus = min(15 * len(scam_phrases), 45)
-    final_score   = min(rs + content_bonus, 100)
-    final_ri      = compute_risk_level(final_score) if content_bonus else ri
+
+    # ── NEW: Phishing URL ML model (trained on url.csv) ─────────────────────────
+    # Runs as a separate pipeline from the text scam model. If no model/data is
+    # available it returns label='unknown' and contributes nothing, so behaviour
+    # for existing deployments without url.csv is completely unchanged.
+    url_ml_result = url_ml_predict(url)
+    ml_prob       = url_ml_result.get('probability', 0.0)
+    if url_ml_result.get('label') != 'unknown':
+        indicators.append(f"AI model flags URL as {url_ml_result['label']} "
+                           f"({round(ml_prob * 100)}% confidence)" if url_ml_result['label'] == 'phishing' else
+                           "AI model rates URL as likely legitimate")
+        ml_bonus = round(ml_prob * 40)   # ML contributes up to +40 on top of heuristic score
+    else:
+        ml_bonus = 0
+
+    final_score = min(rs + content_bonus + ml_bonus, 100)
+    final_ri    = compute_risk_level(final_score) if (content_bonus or ml_bonus) else ri
 
     verdict = (
         f"This URL shows {len(indicators)} phishing indicator(s) and is likely malicious."
@@ -274,6 +290,8 @@ def analyse_url_full(url: str) -> dict:
         'scan_type':       'URL Scanner',
         'content_analysis':content_result,   # NEW: used by the URL Scanner page UI
         'open_url':        content_result.get('url_used', url),
+        'url_ml_label':      url_ml_result.get('label', 'unknown'),      # NEW
+        'url_ml_probability':round(ml_prob * 100, 1),                    # NEW
     }
 
 
