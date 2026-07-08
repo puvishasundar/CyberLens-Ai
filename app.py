@@ -1382,7 +1382,8 @@ elif selected == "URL Scanner":
             H('<div class="alert-warning">⚠️ Please enter a URL to scan.</div>')
         else:
             steps = ["🔗 Parsing URL structure…", "🛡️ Checking domain reputation…",
-                     "🔍 Scanning for phishing patterns…", "📊 Calculating risk score…"]
+                     "🔍 Scanning for phishing patterns…", "🌐 Analysing webpage content…",
+                     "📊 Calculating risk score…"]
             pb = st.progress(0); ph = st.empty()
             for i, step in enumerate(steps):
                 ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
@@ -1395,6 +1396,116 @@ elif selected == "URL Scanner":
 
     if st.session_state.result_url:
         render_full_result(st.session_state.result_url)
+
+        # ══════════════════════════════════════════════════════════════
+        # NEW: Website Access Control + Content Analysis (URL Scanner only)
+        # Existing scanner logic/UI above is untouched — this section only
+        # extends the URL Scanner page with the new safe-open / block flow.
+        # ══════════════════════════════════════════════════════════════
+        _url_result   = st.session_state.result_url
+        _level        = _url_result.get("risk_level", "SAFE")
+        _is_safe_site = _level in ("SAFE", "LOW")          # SAFE/LOW → can open, MEDIUM/HIGH/CRITICAL → blocked
+        _content      = _url_result.get("content_analysis", {})
+        _scam_phrases = _content.get("suspicious_phrases", [])
+        _open_url     = _url_result.get("open_url", url_val.strip())
+
+        st.write("")
+        H('<div class="cyber-divider"></div>')
+
+        # ── Suspicious Content Found (webpage text analysis) ────────────────
+        section_header("Suspicious Content Found", "🕵️")
+        if _content.get("error"):
+            H(f'<div class="alert-warning">⚠️ Could not analyse page content — {_content["error"]}</div>')
+        elif _scam_phrases:
+            _phrase_chips = "".join(f'<span class="kw-chip">{p}</span>' for p in _scam_phrases[:12])
+            H(f'<div style="line-height:2.4">{_phrase_chips}</div>')
+            H(f'<div style="font-size:0.78rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:2px">'
+              f'{len(_scam_phrases)} scam/phishing phrase(s) found in the page text.</div>')
+        elif _content.get("fetched"):
+            H('<div style="color:var(--text-dim);font-size:0.82rem;font-family:var(--font-mono)">'
+              'No obvious scam phrases detected in the visible page text.</div>')
+        else:
+            H('<div style="color:var(--text-dim);font-size:0.82rem;font-family:var(--font-mono)">'
+              'Page content was not analysed.</div>')
+
+        st.write("")
+        H('<div class="cyber-divider"></div>')
+
+        # ── Open Website (safe) vs Access Blocked (unsafe) ───────────────────
+        if _is_safe_site:
+            section_header("Website Access", "🔓")
+            H(f'''
+            <a href="{_open_url}" target="_blank" rel="noopener noreferrer"
+               style="display:inline-block;text-decoration:none;
+                      background:linear-gradient(135deg,rgba(0,212,255,0.12),rgba(124,58,237,0.12));
+                      border:1px solid rgba(0,212,255,0.4);border-radius:12px;color:var(--primary);
+                      font-family:var(--font-display);font-size:0.75rem;font-weight:700;
+                      letter-spacing:0.14em;padding:0.9rem 2rem;text-transform:uppercase;
+                      box-shadow:0 0 20px rgba(0,212,255,0.08);">
+                🌐 Open Website
+            </a>''')
+        else:
+            section_header("Website Access", "🔒")
+            H('''
+            <div class="alert-error" style="text-align:center;padding:1.5rem;border-radius:14px">
+                <div style="font-size:1.6rem;margin-bottom:0.4rem">🚫 Dangerous Website Detected</div>
+                <div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-dim)">
+                    Access Blocked for Your Safety
+                </div>
+            </div>''')
+            H('''
+            <div style="opacity:0.4;pointer-events:none;margin-top:0.85rem;display:inline-block">
+                <span style="display:inline-block;background:rgba(255,255,255,0.03);
+                            border:1px solid rgba(255,255,255,0.08);border-radius:12px;color:var(--text-dim);
+                            font-family:var(--font-display);font-size:0.75rem;font-weight:700;
+                            letter-spacing:0.14em;padding:0.9rem 2rem;text-transform:uppercase">
+                    🌐 Open Website (Blocked)
+                </span>
+            </div>''')
+
+            # ── Safety Tips ──────────────────────────────────────────────────
+            st.write("")
+            section_header("Safety Tips", "🛡️")
+            _tips = [
+                "🔒 Never enter passwords, OTPs, or bank details on this site.",
+                "🔎 Verify the sender or link through an official channel before trusting it.",
+                "🚫 Do not download or install anything offered by this website.",
+                "📵 Avoid clicking any 'urgent' or 'limited-time' buttons on the page.",
+                "📢 Report the link to cybercrime.gov.in or your local cyber cell.",
+            ]
+            for i, tip in enumerate(_tips):
+                H(f'<div class="rec-item" style="animation-delay:{i*0.07}s">{tip}</div>')
+
+        # ── Downloadable Scan Report (includes content analysis) ─────────────
+        st.write("")
+        _report_lines = [
+            "CYBERLENS AI — URL SCAN REPORT",
+            "=" * 42,
+            f"Scanned URL     : {_url_result.get('url', url_val.strip())}",
+            f"Risk Level      : {_level}",
+            f"Risk Score      : {round(_url_result.get('risk_score', 0))}/100",
+            f"Verdict         : {_url_result.get('verdict', '-')}",
+            "",
+            "Indicators:",
+        ] + [f" - {i}" for i in _url_result.get("indicators", [])] + [
+            "",
+            "Suspicious Content Found (webpage text):",
+        ] + ([f" - {p}" for p in _scam_phrases] if _scam_phrases else [
+            " - None detected" if not _content.get("error") else f" - Not analysed ({_content['error']})"
+        ]) + [
+            "",
+            "Recommendations:",
+        ] + [f" - {r}" for r in _url_result.get("recommendations", [])]
+        _report_txt = "\n".join(_report_lines)
+
+        st.download_button(
+            "📄 Download Scan Report",
+            data      =_report_txt,
+            file_name ="cyberlens_url_scan_report.txt",
+            mime      ="text/plain",
+            use_container_width=True,
+            key       ="url_report_dl",
+        )
 
 
 # ══════════════════════════════════════════════════════════════════

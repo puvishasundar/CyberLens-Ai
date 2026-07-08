@@ -18,3 +18,5 @@ streamlit-local-storage
 langdetect>=1.0.9          # Offline language detection (no API key needed)
 googletrans==4.0.0rc1      # Free Google Translate (unofficial, no key)
 deep-translator>=1.11.4    # Fallback translation library
+# ── URL Scanner: webpage content analysis (new) ─────────────────────────────────
+beautifulsoup4>=4.12.0     # Safe visible-text extraction for scam/phishing scanning

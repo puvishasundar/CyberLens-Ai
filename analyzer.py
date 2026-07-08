@@ -7,6 +7,8 @@ import re
 import time
 import numpy as np
 import pytesseract
+import requests                       # NEW: used for safe webpage content fetching (URL Scanner enhancement)
+from bs4 import BeautifulSoup         # NEW: used to extract only visible text from fetched pages
 
 # ── Cross-platform Tesseract path ───────────────────────────────────────────────
 _WIN_TESS = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -149,6 +151,75 @@ def analyse_text(text: str) -> dict:
     }
 
 
+# ─── NEW: Webpage Content Analysis (URL Scanner enhancement) ─────────────────────
+# Fetches the page's HTML *server-side* (the user's browser never visits the
+# site) and scans only the visible text for common scam / phishing phrases.
+# This never opens the website for the user — it only reads its content safely.
+
+SCAM_CONTENT_PHRASES = [
+    "congratulations! you won", "congratulations, you won", "you have won",
+    "you've won", "claim your prize", "win an iphone", "win a free",
+    "registration fee", "processing fee required", "verify your account",
+    "update your bank details", "update your payment details",
+    "limited time offer", "urgent action required", "click here now",
+    "act now", "account has been suspended", "confirm your identity",
+    "you have been selected", "free gift", "lottery winner",
+    "otp verification required", "bank account blocked", "confirm your password",
+    "unusual activity detected", "your account will be closed",
+]
+
+def analyse_webpage_content(url: str, timeout: int = 6) -> dict:
+    """
+    Safely fetch a webpage's HTML (server-side only — never opens it in the
+    user's browser) and scan its *visible* text for scam/phishing phrases.
+    Always returns a dict and never raises, so a bad/unreachable URL cannot
+    crash the scanner.
+    """
+    result = {
+        'fetched':            False,
+        'url_used':           url,
+        'suspicious_phrases': [],
+        'content_snippet':    '',
+        'error':              None,
+    }
+
+    fetch_url = url.strip()
+    if not fetch_url.startswith(('http://', 'https://')):
+        fetch_url = 'http://' + fetch_url
+    result['url_used'] = fetch_url
+
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (compatible; CyberLensAI-Scanner/1.0)'}
+        resp = requests.get(fetch_url, headers=headers, timeout=timeout, allow_redirects=True)
+        resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        for tag in soup(['script', 'style', 'noscript', 'head']):
+            tag.decompose()
+        visible_text = soup.get_text(separator=' ', strip=True)
+        visible_lower = visible_text.lower()
+
+        found = [p for p in SCAM_CONTENT_PHRASES if p in visible_lower]
+
+        result['fetched']            = True
+        result['suspicious_phrases'] = found
+        result['content_snippet']    = visible_text[:500]
+
+    except requests.exceptions.Timeout:
+        result['error'] = 'The website took too long to respond (timeout).'
+    except requests.exceptions.SSLError:
+        result['error'] = "Could not verify the site's SSL certificate."
+    except requests.exceptions.ConnectionError:
+        result['error'] = 'Could not connect to the website — it may be down or blocking requests.'
+    except requests.exceptions.HTTPError:
+        status = resp.status_code if 'resp' in locals() else '?'
+        result['error'] = f'The website returned an error (HTTP {status}).'
+    except Exception:
+        result['error'] = "Unable to fetch or analyse this website's content."
+
+    return result
+
+
 # ─── URL Analysis ─────────────────────────────────────────────────────────────────
 
 def analyse_url_full(url: str) -> dict:
@@ -169,25 +240,40 @@ def analyse_url_full(url: str) -> dict:
     if base['typosquat_risk']:      indicators.append('Possible typosquatting of known brand')
     if base['is_known_legit']:      indicators.append('Domain matches known legitimate site')
 
+    # ── NEW: Webpage content analysis (does not alter the URL heuristic above) ──
+    content_result = analyse_webpage_content(url)
+    scam_phrases    = content_result.get('suspicious_phrases', [])
+    if scam_phrases:
+        indicators.append(f"Scam phrases found on page: {', '.join(scam_phrases[:4])}")
+
+    # Content-based signal is additive on top of the existing URL score, so the
+    # original URL detection logic/weights above remain completely unchanged.
+    content_bonus = min(15 * len(scam_phrases), 45)
+    final_score   = min(rs + content_bonus, 100)
+    final_ri      = compute_risk_level(final_score) if content_bonus else ri
+
     verdict = (
         f"This URL shows {len(indicators)} phishing indicator(s) and is likely malicious."
-        if rs >= 65 else
+        if final_score >= 65 else
         f"This URL has some suspicious characteristics ({len(indicators)} flag(s))."
-        if rs >= 30 else
+        if final_score >= 30 else
         'This URL appears relatively safe, but always verify the source.'
     )
 
     return {
         **base,
-        'risk_level':      ri['level'],
-        'risk_color':      ri['color'],
-        'risk_emoji':      ri['emoji'],
+        'risk_score':      final_score,
+        'risk_level':      final_ri['level'],
+        'risk_color':      final_ri['color'],
+        'risk_emoji':      final_ri['emoji'],
         'verdict':         verdict,
         'indicators':      indicators,
         'suspicious_kws':  base['suspicious_kw'],
-        'recommendations': get_recommendations(ri['level']),
-        'confidence':      min(90, 50 + rs // 2),
+        'recommendations': get_recommendations(final_ri['level']),
+        'confidence':      min(90, 50 + final_score // 2),
         'scan_type':       'URL Scanner',
+        'content_analysis':content_result,   # NEW: used by the URL Scanner page UI
+        'open_url':        content_result.get('url_used', url),
     }
 
 
