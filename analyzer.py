@@ -21,7 +21,7 @@ if os.name == 'nt':
 from utils import (
     score_keywords, compute_risk_level, normalise_score,
     analyse_url, analyse_recruiter_email, analyse_company_name,
-    SCAM_KEYWORDS,
+    SCAM_KEYWORDS, SHORTENER_DOMAINS
 )
 from ml_model import predict as ml_predict, get_feature_importance
 from url_model import predict_url as url_ml_predict
@@ -171,9 +171,6 @@ SCAM_CONTENT_PHRASES = [
 ]
 
 def fetch_via_playwright(url: str, timeout_ms: int = 10000) -> tuple:
-    """
-    Sub-render using Playwright framework when static requests cannot retrieve content
-    """
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -434,6 +431,10 @@ def analyse_url_full(url: str) -> dict:
     if any('entropy' in f for f in base['flags']):
         indicators.append('High string randomness/entropy')
 
+    is_shortened_domain = any(sd in url.lower() for sd in SHORTENER_DOMAINS)
+    if is_shortened_domain:
+        indicators.append('Masked URL (using known link shortener)')
+
     content_result = analyse_webpage_content(url)
     scam_phrases    = content_result.get('suspicious_phrases', [])
     if scam_phrases:
@@ -469,6 +470,29 @@ def analyse_url_full(url: str) -> dict:
     else:
         ml_bonus = 0
 
+    # Redirection check / Shortener suspension check
+    shortener_warning_detected = False
+    warning_phrases = [
+        "created by a suspended account",
+        "link has been suspended",
+        "why was this link blocked",
+        "link has been blocked",
+        "flagged as spam, phishing",
+        "no longer available because it was created by a suspended account",
+        "violates our terms of service",
+        "violates our acceptable use policy",
+        "site has been suspended",
+        "account suspended",
+        "this link has been flagged"
+    ]
+    
+    page_text_lower = content_result.get('content_snippet', '').lower()
+    is_dest_shortened = any(sd in content_result.get('url_used', '').lower() for sd in SHORTENER_DOMAINS)
+    
+    if is_shortened_domain or is_dest_shortened:
+        if any(p in page_text_lower for p in warning_phrases):
+            shortener_warning_detected = True
+
     false_safe_floor = 0
     if url_ml_result.get('label') == 'phishing' and ml_prob >= 0.75:
         false_safe_floor = 65
@@ -485,6 +509,10 @@ def analyse_url_full(url: str) -> dict:
     if base['has_ip'] or '@' in url:
         false_safe_floor = max(false_safe_floor, 55)
 
+    if shortener_warning_detected:
+        indicators.append('URL officially suspended/blocked by provider for abuse/phishing')
+        false_safe_floor = 90
+
     final_score = max(min(rs + content_bonus + ml_bonus + text_ml_bonus, 100), false_safe_floor)
     final_ri    = compute_risk_level(final_score)
 
@@ -494,12 +522,14 @@ def analyse_url_full(url: str) -> dict:
     explanation_bullets = []
     text_lower_all = (content_result.get('content_snippet', '') + " " + url).lower()
     
+    if shortener_warning_detected:
+        explanation_bullets.append("✓ URL officially suspended/blocked by the provider for abuse")
     if any(term in text_lower_all for term in ['registration fee', 'joining fee', 'processing fee', 'deposit', 'pay fee']):
         explanation_bullets.append("✓ Registration/processing fee detected")
     if any(term in text_lower_all for term in ['urgent', 'immediately', 'immediate', 'act now', 'limited offer', 'expiring', 'today only']):
         explanation_bullets.append("✓ Urgent/time-pressure language detected")
-    if base['tld_risk'] > 0 or base['has_ip'] or base['typosquat_risk'] or '@' in url:
-        explanation_bullets.append("✓ Suspicious domain or TLD structure")
+    if base['tld_risk'] > 0 or base['has_ip'] or base['typosquat_risk'] or '@' in url or is_shortened_domain or is_dest_shortened:
+        explanation_bullets.append("✓ Suspicious domain, TLD, or shortened link structure")
     if len(scam_phrases) > 0 or len(base['suspicious_kw']) > 0:
         explanation_bullets.append("✓ Scam/phishing keywords identified")
     if (url_ml_result.get('label') == 'phishing' and ml_prob >= 0.5) or (text_ml_prob >= 0.5):

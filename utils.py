@@ -358,6 +358,12 @@ SCAM_TLD_RISK = {
     '.win': 3, '.bid': 3, '.review': 3, '.country': 3
 }
 
+SHORTENER_DOMAINS = {
+    'bit.ly', 'tinyurl.com', 't.co', 'cutt.ly', 'rebrand.ly', 'is.gd',
+    'buff.ly', 'ow.ly', 'v.gd', 'shorturl.at', 'tiny.cc', 'git.io',
+    't.ly', 'rb.gy', 'dub.sh', 'urlqr.me'
+}
+
 def score_keywords(text: str) -> dict:
     text_lower = text.lower()
 
@@ -523,6 +529,11 @@ def analyse_url(url: str) -> dict:
     if ent > 4.5:
         result['flags'].append(f'High URL entropy ({round(ent, 2)})')
 
+    # 12. Shortener checking
+    is_shortened = any(domain == sd or domain.endswith('.' + sd) for sd in SHORTENER_DOMAINS)
+    if is_shortened:
+        result['flags'].append('Shortened URL used (frequently used to mask the final destination)')
+
     # Compute heuristic risk score
     score = 0
     if not result['is_https']:
@@ -549,6 +560,8 @@ def analyse_url(url: str) -> dict:
         score += 12
     if ent > 4.5:
         score += 10
+    if is_shortened:
+        score += 15
 
     if result['is_known_legit']:
         score = max(0, score - 60)
