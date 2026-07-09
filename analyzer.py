@@ -217,6 +217,11 @@ def analyse_webpage_content(url: str, timeout: int = 6) -> dict:
         'suspicious_phrases': [],
         'content_snippet':    '',
         'error':              None,
+        # ── NEW: extracted webpage text run through the existing text scam
+        # model (scam_detector.pkl + vectorizer.pkl, via ml_model.predict) ──
+        'text_model_label':       None,
+        'text_model_probability': 0.0,
+        'extracted_text_len':     0,
     }
 
     fetch_url = url.strip()
@@ -240,6 +245,23 @@ def analyse_webpage_content(url: str, timeout: int = 6) -> dict:
         result['fetched']            = True
         result['suspicious_phrases'] = found
         result['content_snippet']    = visible_text[:500]
+        result['extracted_text_len'] = len(visible_text)
+
+        # ── NEW: run the extracted webpage text through the EXISTING text
+        # scam detection model (scam_detector.pkl + vectorizer.pkl via
+        # ml_model.predict). This reuses the same model used by the Text
+        # Scanner — no new model is trained. Wrapped in try/except so a
+        # model or text-length issue can never crash the URL scan; it just
+        # falls back to the rule-based signals already computed above.
+        try:
+            if visible_text and len(visible_text.strip()) >= 15:
+                text_ml = ml_predict(visible_text[:5000])
+                result['text_model_label']       = text_ml.get('label')
+                result['text_model_probability'] = round(float(text_ml.get('probability', 0.0)), 4)
+        except Exception:
+            # Text-model scoring is best-effort; leave defaults (None/0.0)
+            # so the rest of the URL analysis proceeds unaffected.
+            pass
 
     except requests.exceptions.Timeout:
         result['error'] = 'The website took too long to respond (timeout).'
@@ -286,6 +308,22 @@ def analyse_url_full(url: str) -> dict:
     # original URL detection logic/weights above remain completely unchanged.
     content_bonus = min(15 * len(scam_phrases), 45)
 
+    # ── NEW: Extracted webpage text scored by the existing text scam model
+    # (scam_detector.pkl + vectorizer.pkl). Additive, same pattern as the
+    # phrase-based content_bonus above, so nothing existing is disturbed.
+    text_ml_prob  = content_result.get('text_model_probability', 0.0) or 0.0
+    text_ml_label = content_result.get('text_model_label')
+    if content_result.get('fetched') and text_ml_label is not None:
+        if text_ml_prob >= 0.5:
+            indicators.append(
+                f"Webpage text flagged as scam-like by text AI model ({round(text_ml_prob * 100)}% confidence)"
+            )
+        elif text_ml_prob < 0.35:
+            indicators.append("Webpage text rated as likely legitimate by text AI model")
+    # Trust the text model more when it strongly agrees the content is scammy;
+    # contributes up to +35 on top of the URL score.
+    text_ml_bonus = round(text_ml_prob * 35) if content_result.get('fetched') else 0
+
     # ── NEW: Phishing URL ML model (trained on feature-engineered url.csv) ──────
     # Runs as a separate pipeline from the text scam model, using the full
     # structural + live-webpage feature set (Title, LineOfCode, CSS/JS counts,
@@ -323,9 +361,15 @@ def analyse_url_full(url: str) -> dict:
         false_safe_floor = 65
     elif url_ml_result.get('label') == 'phishing' and ml_prob >= 0.60:
         false_safe_floor = 45
+    # If the extracted webpage text is strongly scam-like, don't let a low
+    # URL-only score wash that out either.
+    if content_result.get('fetched') and text_ml_prob >= 0.80:
+        false_safe_floor = max(false_safe_floor, 60)
+    elif content_result.get('fetched') and text_ml_prob >= 0.65:
+        false_safe_floor = max(false_safe_floor, 40)
 
-    final_score = max(min(rs + content_bonus + ml_bonus, 100), false_safe_floor)
-    final_ri    = compute_risk_level(final_score) if (content_bonus or ml_bonus or false_safe_floor) else ri
+    final_score = max(min(rs + content_bonus + ml_bonus + text_ml_bonus, 100), false_safe_floor)
+    final_ri    = compute_risk_level(final_score) if (content_bonus or ml_bonus or text_ml_bonus or false_safe_floor) else ri
 
     verdict = (
         f"This URL shows {len(indicators)} phishing indicator(s) and is likely malicious."
@@ -353,6 +397,10 @@ def analyse_url_full(url: str) -> dict:
         'url_ml_probability':round(ml_prob * 100, 1),                    # NEW
         'url_ml_fetched':    ml_fetched,                                 # NEW: whether live page features were used
         'url_ml_fetch_error':url_ml_result.get('fetch_error'),           # NEW
+        # ── NEW: extracted webpage text scored via the existing text scam
+        # model (scam_detector.pkl + vectorizer.pkl) ─────────────────────
+        'text_model_label':       content_result.get('text_model_label'),
+        'text_model_probability': round(text_ml_prob * 100, 1),
     }
 
 
