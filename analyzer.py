@@ -286,22 +286,46 @@ def analyse_url_full(url: str) -> dict:
     # original URL detection logic/weights above remain completely unchanged.
     content_bonus = min(15 * len(scam_phrases), 45)
 
-    # ── NEW: Phishing URL ML model (trained on url.csv) ─────────────────────────
-    # Runs as a separate pipeline from the text scam model. If no model/data is
-    # available it returns label='unknown' and contributes nothing, so behaviour
-    # for existing deployments without url.csv is completely unchanged.
+    # ── NEW: Phishing URL ML model (trained on feature-engineered url.csv) ──────
+    # Runs as a separate pipeline from the text scam model, using the full
+    # structural + live-webpage feature set (Title, LineOfCode, CSS/JS counts,
+    # forms, redirects, etc). If no model/data is available it returns
+    # label='unknown' and contributes nothing, so behaviour for existing
+    # deployments without url.csv is completely unchanged.
     url_ml_result = url_ml_predict(url)
     ml_prob       = url_ml_result.get('probability', 0.0)
+    ml_fetched    = url_ml_result.get('fetched', False)
+
     if url_ml_result.get('label') != 'unknown':
-        indicators.append(f"AI model flags URL as {url_ml_result['label']} "
-                           f"({round(ml_prob * 100)}% confidence)" if url_ml_result['label'] == 'phishing' else
-                           "AI model rates URL as likely legitimate")
-        ml_bonus = round(ml_prob * 40)   # ML contributes up to +40 on top of heuristic score
+        if url_ml_result['label'] == 'phishing':
+            indicators.append(
+                f"AI model flags URL as phishing ({round(ml_prob * 100)}% confidence)"
+            )
+        else:
+            indicators.append("AI model rates URL as likely legitimate")
+
+        # ML contributes up to +55 on top of the heuristic score. When the
+        # live webpage could be fetched, the model had access to page-level
+        # signals (forms, password fields, redirects, hidden iframes, etc.),
+        # so we trust it more — this is the main lever for reducing
+        # false-safe results, since the pure-heuristic score alone often
+        # misses JS-only or content-driven phishing pages.
+        ml_bonus = round(ml_prob * (55 if ml_fetched else 40))
     else:
         ml_bonus = 0
 
-    final_score = min(rs + content_bonus + ml_bonus, 100)
-    final_ri    = compute_risk_level(final_score) if (content_bonus or ml_bonus) else ri
+    # ── Reduce false-safes: if the ML model strongly disagrees with a "safe"
+    # heuristic verdict, don't let the heuristic silently win. This lifts the
+    # floor of the combined score rather than only adding a bonus, so a
+    # confident phishing prediction can't be washed out by a low base score.
+    false_safe_floor = 0
+    if url_ml_result.get('label') == 'phishing' and ml_prob >= 0.75:
+        false_safe_floor = 65
+    elif url_ml_result.get('label') == 'phishing' and ml_prob >= 0.60:
+        false_safe_floor = 45
+
+    final_score = max(min(rs + content_bonus + ml_bonus, 100), false_safe_floor)
+    final_ri    = compute_risk_level(final_score) if (content_bonus or ml_bonus or false_safe_floor) else ri
 
     verdict = (
         f"This URL shows {len(indicators)} phishing indicator(s) and is likely malicious."
@@ -327,6 +351,8 @@ def analyse_url_full(url: str) -> dict:
         'open_url':        content_result.get('url_used', url),
         'url_ml_label':      url_ml_result.get('label', 'unknown'),      # NEW
         'url_ml_probability':round(ml_prob * 100, 1),                    # NEW
+        'url_ml_fetched':    ml_fetched,                                 # NEW: whether live page features were used
+        'url_ml_fetch_error':url_ml_result.get('fetch_error'),           # NEW
     }
 
 
