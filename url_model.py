@@ -1,27 +1,5 @@
 # url_model.py — CyberLens AI
 # Phishing URL detection pipeline (separate from the text scam model in ml_model.py)
-#
-# Compatible with the NEW simplified, feature-engineered `url.csv` dataset,
-# whose columns are:
-#   url, label, url_length, num_dots, has_https, has_ip, num_subdirs,
-#   num_params, suspicious_words, tld, special_char_count, digits_count,
-#   entropy
-#
-# Design:
-#   • Every numeric feature above (except `tld`, which is categorical) is
-#     reconstructed live for any user-entered URL via
-#     `extract_features_for_url` — no network/webpage fetch is required,
-#     since the new dataset is purely URL-string based.
-#   • `tld` is handled via target encoding: at training time we learn the
-#     phishing rate per TLD from url.csv and store that lookup table
-#     (`tld_risk_map`) inside the saved model artifact. At prediction time
-#     any TLD not seen during training falls back to the dataset's overall
-#     phishing rate (`tld_prior`).
-#   • Model: RandomForest + GradientBoosting soft-voting ensemble.
-#   • Threshold tuned via precision-recall curve (maximise F1).
-#   • `predict_url()` returns the same result shape the rest of the app
-#     (analyzer.py) already expects: label / probability / confidence /
-#     fetched / fetch_error / features — so no other file needs to change.
 
 import os
 import re
@@ -50,40 +28,29 @@ _POSITIVE_LABELS = {
     '1', 1, True, 'yes', 'phish',
 }
 
-# The full ordered feature set the model is trained/predicted on.
-# NOTE: 'tld' itself is not fed to the model directly — it is converted to
-# the numeric 'tld_risk' feature (see _tld_risk / build_tld_risk_map below).
 FEATURE_COLUMNS = [
     'url_length', 'num_dots', 'has_https', 'has_ip', 'num_subdirs',
     'num_params', 'suspicious_words', 'tld_risk', 'special_char_count',
     'digits_count', 'entropy',
 ]
 
-# Words commonly seen in phishing URLs — used to compute `suspicious_words`
-# for any freshly-entered URL (mirrors how the dataset column was almost
-# certainly generated).
 _SUSPICIOUS_WORDS = [
     'login', 'signin', 'verify', 'account', 'update', 'secure', 'security',
-    'confirm', 'banking', 'bank', 'webscr', 'ebayisapi', 'password',
-    'suspend', 'suspended', 'unlock', 'alert', 'billing', 'invoice',
-    'payment', 'paypal', 'wallet', 'crypto', 'gift', 'bonus', 'free',
-    'win', 'winner', 'prize', 'urgent', 'click', 'limited', 'expire',
-    'reset', 'authenticate', 'validate', 'recover', 'support', 'helpdesk',
+    'confirm', 'banking', 'bank', 'webscr', 'password', 'suspend', 'suspended',
+    'unlock', 'alert', 'billing', 'invoice', 'payment', 'paypal', 'wallet',
+    'crypto', 'gift', 'bonus', 'free', 'win', 'winner', 'prize', 'urgent',
+    'click', 'limited', 'expire', 'reset', 'authenticate', 'validate',
+    'recover', 'support', 'helpdesk', 'lucky', 'money', 'share', 'invitation'
 ]
 
-_DEFAULT_TLD_PRIOR = 0.5  # used only if the model was trained with zero rows (shouldn't happen)
-
-
-# ─── URL-only structural feature extraction (no network needed) ───────────────
+_DEFAULT_TLD_PRIOR = 0.5
 
 def _shannon_entropy(s: str) -> float:
-    """Shannon entropy of the URL string, in bits per character."""
     if not s:
         return 0.0
     counts = Counter(s)
     length = len(s)
     return round(-sum((c / length) * math.log2(c / length) for c in counts.values()), 4)
-
 
 def _extract_domain_and_tld(u: str):
     try:
@@ -92,8 +59,8 @@ def _extract_domain_and_tld(u: str):
         parsed = None
 
     domain = (parsed.netloc if parsed else '').lower()
-    domain = domain.split('@')[-1]     # strip userinfo
-    domain = domain.split(':')[0]      # strip port
+    domain = domain.split('@')[-1]
+    domain = domain.split(':')[0]
     domain_no_www = domain[4:] if domain.startswith('www.') else domain
 
     tld_match = re.search(r'\.([a-z0-9]{2,})$', domain_no_www)
@@ -101,14 +68,7 @@ def _extract_domain_and_tld(u: str):
 
     return parsed, domain_no_www, tld
 
-
 def extract_url_only_features(url: str) -> dict:
-    """
-    Compute every raw feature that can be derived from the URL string alone,
-    matching the columns of the new url.csv (minus 'tld_risk', which is
-    resolved separately using the trained artifact's lookup table since it
-    depends on the training data).
-    """
     u = (url or '').strip()
     if not u.startswith(('http://', 'https://')):
         u = 'http://' + u
@@ -146,14 +106,8 @@ def extract_url_only_features(url: str) -> dict:
     }
     return feats
 
-
 @st.cache_data(max_entries=256, show_spinner=False)
 def extract_features_for_url(url: str) -> dict:
-    """
-    Build the complete raw feature dict for a single URL (everything except
-    'tld_risk', which requires the trained artifact's TLD lookup table and
-    is filled in by predict_url()). Never raises.
-    """
     try:
         return extract_url_only_features(url)
     except Exception as e:
@@ -165,15 +119,10 @@ def extract_features_for_url(url: str) -> dict:
             '_error': str(e),
         }
 
-
 def _tld_risk(tld: str, tld_risk_map: dict, tld_prior: float) -> float:
-    """Look up the learned phishing-rate for a TLD, falling back to the
-    dataset-wide prior for unseen TLDs."""
     return float(tld_risk_map.get((tld or '').lower(), tld_prior))
 
-
 def _row_to_feature_vector(feat_dict: dict, tld_risk_map: dict, tld_prior: float) -> list:
-    """Extract the ordered numeric feature vector (FEATURE_COLUMNS)."""
     vec = []
     for col in FEATURE_COLUMNS:
         if col == 'tld_risk':
@@ -182,11 +131,7 @@ def _row_to_feature_vector(feat_dict: dict, tld_risk_map: dict, tld_prior: float
             vec.append(feat_dict.get(col, 0))
     return vec
 
-
-# ─── Training ───────────────────────────────────────────────────────────────────
-
 def _coerce_binary(v) -> int:
-    """Robustly coerce a variety of truthy/falsy representations to 0/1."""
     if pd.isna(v):
         return 0
     s = str(v).strip().lower()
@@ -199,27 +144,17 @@ def _coerce_binary(v) -> int:
     except ValueError:
         return 0
 
-
 def build_tld_risk_map(df: pd.DataFrame, y: pd.Series) -> tuple:
-    """Target-encode the 'tld' column: phishing rate per TLD, learned only
-    from the training data, plus the overall prior for unseen TLDs."""
     tld_prior = float(y.mean()) if len(y) else _DEFAULT_TLD_PRIOR
 
     if 'tld' not in df.columns:
         return {}, tld_prior
 
-    tmp = pd.DataFrame({'tld': df['tld'].astype(str).str.lower().str.strip(), 'y': y.values})
+    tmp = pd.DataFrame({'tld': df['tld'].fillna('').astype(str).str.lower().str.strip(), 'y': y.values})
     grouped = tmp.groupby('tld')['y'].mean()
     return grouped.to_dict(), tld_prior
 
-
 def train_url_model(data_path: str = DATA_PATH) -> dict:
-    """
-    Train the phishing URL detector directly on the feature-engineered
-    url.csv (RandomForest + GradientBoosting soft-voting ensemble).
-    Returns dict with accuracy, cv_scores, report, pipeline, threshold,
-    tld_risk_map, tld_prior.
-    """
     df = pd.read_csv(data_path)
 
     if 'label' not in df.columns:
@@ -230,19 +165,18 @@ def train_url_model(data_path: str = DATA_PATH) -> dict:
     )
 
     tld_risk_map, tld_prior = build_tld_risk_map(df, y)
-
     binary_like_cols = {'has_https', 'has_ip'}
 
     X = pd.DataFrame(index=df.index)
     for col in FEATURE_COLUMNS:
         if col == 'tld_risk':
-            X[col] = df['tld'].astype(str).str.lower().str.strip().map(tld_risk_map).fillna(tld_prior) \
+            X[col] = df['tld'].fillna('').astype(str).str.lower().str.strip().map(tld_risk_map).fillna(tld_prior) \
                 if 'tld' in df.columns else tld_prior
         elif col in df.columns:
             if col in binary_like_cols:
                 X[col] = df[col].apply(_coerce_binary)
             else:
-                X[col] = pd.to_numeric(df[col], errors='coerce')
+                X[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         else:
             X[col] = 0
 
@@ -307,11 +241,8 @@ def train_url_model(data_path: str = DATA_PATH) -> dict:
         'tld_prior':  tld_prior,
     }
 
-
 @st.cache_resource
 def load_url_artifact():
-    """Load (or train-and-save) the phishing URL ML artifact."""
-
     if os.path.exists(MODEL_PATH):
         try:
             artifact = joblib.load(MODEL_PATH)
@@ -327,20 +258,12 @@ def load_url_artifact():
             artifact.setdefault('tld_risk_map', {})
             artifact.setdefault('tld_prior', _DEFAULT_TLD_PRIOR)
 
-            # If the artifact on disk is a stale one trained on the *old*
-            # 50-column schema, its feature_columns won't match the new
-            # schema — retrain automatically instead of crashing/predicting
-            # garbage.
             if artifact['feature_columns'] != FEATURE_COLUMNS:
-                raise ValueError('Stale model artifact (old feature schema) — retraining')
+                raise ValueError('Stale model artifact — retraining')
 
             return artifact
-
         except Exception:
-            import traceback
-            print("\n===== ERROR LOADING URL MODEL (will retrain) =====")
-            traceback.print_exc()
-            print("====================================================\n")
+            pass
 
     if os.path.exists(DATA_PATH):
         try:
@@ -353,33 +276,11 @@ def load_url_artifact():
                 'tld_prior':       result['tld_prior'],
             }
         except Exception:
-            import traceback
-            print("\n===== ERROR TRAINING URL MODEL =====")
-            traceback.print_exc()
-            print("====================================\n")
+            pass
 
     return None
 
-
 def predict_url(url: str, fetch_webpage: bool = False) -> dict:
-    """
-    Predict whether a URL is phishing, using the URL-string feature model
-    trained on the new url.csv schema.
-
-    `fetch_webpage` is accepted for backward compatibility with older call
-    sites but is unused — the new dataset has no webpage-dependent columns,
-    so no network fetch happens here.
-
-    Returns:
-        {
-          'label':       'phishing' | 'legitimate' | 'unknown',
-          'probability': float  (0.0–1.0, probability of phishing),
-          'confidence':  float  (0.0–1.0),
-          'fetched':     bool   (always False — no webpage fetch needed),
-          'fetch_error': None,
-          'features':    dict   (the computed feature values, for display),
-        }
-    """
     artifact = load_url_artifact()
 
     if artifact is None:
@@ -400,7 +301,6 @@ def predict_url(url: str, fetch_webpage: bool = False) -> dict:
     try:
         feat_dict = extract_features_for_url(url)
     except Exception as e:
-        print(f"[url_model] Warning: feature extraction failed: {e}")
         return {
             'label':       'unknown',
             'probability': 0.0,
@@ -414,10 +314,9 @@ def predict_url(url: str, fetch_webpage: bool = False) -> dict:
     X_row  = pd.DataFrame([vector], columns=FEATURE_COLUMNS)
 
     try:
-        proba   = pipeline.predict_proba(X_row)[0]     # [p_legit, p_phish]
+        proba   = pipeline.predict_proba(X_row)[0]
         ml_prob = float(proba[1])
     except Exception as e:
-        print(f"[url_model] Warning: prediction failed: {e}")
         return {
             'label':       'unknown',
             'probability': 0.0,
@@ -442,11 +341,9 @@ def predict_url(url: str, fetch_webpage: bool = False) -> dict:
         'features':    display_features,
     }
 
-
-# ─── Bootstrap ──────────────────────────────────────────────────────────────────
 if not os.path.exists(MODEL_PATH):
     try:
         if os.path.exists(DATA_PATH):
             train_url_model()
-    except Exception as e:
-        print(f"[url_model] Warning: could not pre-train phishing URL model: {e}")
+    except Exception:
+        pass

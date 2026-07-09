@@ -7,14 +7,16 @@ import re
 import time
 import numpy as np
 import pytesseract
-import requests                       # NEW: used for safe webpage content fetching (URL Scanner enhancement)
-from bs4 import BeautifulSoup         # NEW: used to extract only visible text from fetched pages
+import requests
+import urllib3
+from bs4 import BeautifulSoup
 
-# ── Cross-platform Tesseract path ───────────────────────────────────────────────
+# Disable insecure request warning for verify=False on dodgy domains
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 _WIN_TESS = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 if os.name == 'nt':
     pytesseract.pytesseract.tesseract_cmd = _WIN_TESS
-# On Linux/Mac, tesseract is expected to be on PATH (installed via apt/brew)
 
 from utils import (
     score_keywords, compute_risk_level, normalise_score,
@@ -24,8 +26,6 @@ from utils import (
 from ml_model import predict as ml_predict, get_feature_importance
 from url_model import predict_url as url_ml_predict
 from language_utils import detect_and_translate
-
-# ─── Shared Recommendation Bank ─────────────────────────────────────────────────
 
 _RECS = {
     'CRITICAL': [
@@ -63,42 +63,28 @@ _RECS = {
 def get_recommendations(level: str) -> list:
     return _RECS.get(level, _RECS['SAFE'])
 
-
-# ─── Text / Message Analysis ─────────────────────────────────────────────────────
-
 def analyse_text(text: str) -> dict:
-    """
-    Full pipeline: language detection → translation → ML prediction +
-    keyword heuristics → combined risk score.
-    """
     if not text or not text.strip():
         return {'error': 'No text provided'}
 
-    # ── Multilingual: detect language and translate to English ──────────────────
     lang_result   = detect_and_translate(text)
-    analysis_text = lang_result['translated_text']   # English (or original if en/unknown)
+    analysis_text = lang_result['translated_text']
 
-    # ML prediction (always on English text)
     ml_result    = ml_predict(analysis_text)
-    ml_scam_prob = ml_result['probability']   # 0–1
+    ml_scam_prob = ml_result['probability']
 
-    # Keyword heuristics — run on BOTH original and translated text, take the higher score.
-    # This ensures India-specific terms (aadhaar, pan card, kyc) are not lost in translation.
     kw_translated = score_keywords(analysis_text)
     kw_original   = score_keywords(lang_result['original_text'])
     kw_result     = kw_translated if kw_translated['score'] >= kw_original['score'] else kw_original
     kw_raw        = kw_result['score']
-    kw_norm       = normalise_score(kw_raw, ceiling=20.0)   # ceiling matches utils.py default
+    kw_norm       = normalise_score(kw_raw, ceiling=20.0)
 
-    # Blend: 45% ML + 55% keyword heuristic.
-    # Keywords are hand-crafted scam signals and more reliable than a small-data ML model.
-# Confidence-aware blend: trust whichever signal is stronger.
     if kw_norm >= 60:
-        ml_weight, kw_weight = 0.30, 0.70   # strong keyword signal → trust it
+        ml_weight, kw_weight = 0.30, 0.70
     elif kw_norm <= 10:
-        ml_weight, kw_weight = 0.70, 0.30   # no keyword signal → lean on ML
+        ml_weight, kw_weight = 0.70, 0.30
     else:
-        ml_weight, kw_weight = 0.45, 0.55   # ambiguous → current default
+        ml_weight, kw_weight = 0.45, 0.55
 
     blended = (ml_scam_prob * 100 * ml_weight) + (kw_norm * kw_weight)
     blended = min(round(blended, 1), 100.0)
@@ -107,11 +93,9 @@ def analyse_text(text: str) -> dict:
     level       = risk_info['level']
     confidence  = round(ml_result['confidence'] * 100, 1)
 
-    # Top TF-IDF features for explainability
     top_features = get_feature_importance(text, top_n=8)
     feature_words = [f[0] for f in top_features]
 
-    # Merge with keyword hits for display
     all_suspicious = list(set(kw_result['found'] + feature_words))[:12]
 
     verdict = (
@@ -137,7 +121,6 @@ def analyse_text(text: str) -> dict:
         'recommendations':  get_recommendations(level),
         'ml_label':         ml_result['label'],
         'scan_type':        'Text Analysis',
-        # ── Language info ──────────────────────────────────────────────────────
         'lang_code':        lang_result['lang_code'],
         'lang_name':        lang_result['lang_name'],
         'lang_native':      lang_result['native_name'],
@@ -151,12 +134,6 @@ def analyse_text(text: str) -> dict:
         'translation_error': lang_result.get('translation_error'),
     }
 
-
-# ─── NEW: Webpage Content Analysis (URL Scanner enhancement) ─────────────────────
-# Fetches the page's HTML *server-side* (the user's browser never visits the
-# site) and scans only the visible text for common scam / phishing phrases.
-# This never opens the website for the user — it only reads its content safely.
-
 SCAM_CONTENT_PHRASES = [
     "congratulations! you won", "congratulations, you won", "you have won",
     "you've won", "claim your prize", "win an iphone", "win a free",
@@ -167,49 +144,57 @@ SCAM_CONTENT_PHRASES = [
     "you have been selected", "free gift", "lottery winner",
     "otp verification required", "bank account blocked", "confirm your password",
     "unusual activity detected", "your account will be closed",
-    # ── NEW: UPI / QR content phrases ─────────────────────────────────────────
     "enter your upi pin", "scan to receive", "scan qr to receive",
     "accept collect request", "upi id blocked", "upi deactivated",
     "scan and win", "scan to claim", "qr code expired",
-    # ── NEW: KYC / bank / digital arrest phrases ─────────────────────────────
     "complete your kyc", "kyc expired", "aadhaar blocked", "pan card suspended",
     "digital arrest", "arrest warrant", "cbi notice", "cyber crime notice",
     "legal action will be taken", "court notice", "fir has been filed",
     "income tax notice", "tds refund", "gst refund",
-    # ── NEW: Loan / investment / crypto phrases ──────────────────────────────
     "pre-approved loan", "instant loan approved", "guaranteed returns",
     "double your money", "risk free investment", "crypto trading signal",
     "sure shot profit", "multibagger stock",
-    # ── NEW: Job / internship phrases ────────────────────────────────────────
     "no interview required", "joining fee", "offer letter fee",
     "work from home earning", "captcha typing job", "whatsapp hr",
-    # ── NEW: Courier / delivery phrases ──────────────────────────────────────
     "customs clearance fee", "parcel on hold", "pay to release your parcel",
     "delivery failed pay", "package will be destroyed",
-    # ── NEW: Electricity / utility phrases ───────────────────────────────────
     "electricity disconnected tonight", "pay electricity bill immediately",
     "power disconnection notice", "update your meter details",
-    # ── NEW: Scholarship / education phrases ─────────────────────────────────
     "scholarship approved", "scholarship processing fee", "fee waiver offer",
-    # ── NEW: Online shopping phrases ─────────────────────────────────────────
     "pay to confirm your order", "order refund pending", "huge discount today only",
     "mega sale 90% off",
-    # ── NEW: AI voice / deepfake phrases ─────────────────────────────────────
     "this is your son", "emergency accident money", "kidnapped call now",
     "voice message urgent",
-    # ── NEW: Gaming / reward phrases ─────────────────────────────────────────
     "withdraw your winnings", "refer app earn cash", "spin and win",
     "click and earn daily",
-    # ── NEW: Fake customer care ──────────────────────────────────────────────
     "call this number for refund", "fake customer care agent",
 ]
 
-def analyse_webpage_content(url: str, timeout: int = 6) -> dict:
+def fetch_via_playwright(url: str, timeout_ms: int = 10000) -> tuple:
     """
-    Safely fetch a webpage's HTML (server-side only — never opens it in the
-    user's browser) and scan its *visible* text for scam/phishing phrases.
-    Always returns a dict and never raises, so a bad/unreachable URL cannot
-    crash the scanner.
+    Sub-render using Playwright framework when static requests cannot retrieve content
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport={'width': 1280, 'height': 800}
+            )
+            page = context.new_page()
+            response = page.goto(url, timeout=timeout_ms, wait_until='networkidle')
+            html = page.content()
+            status = response.status if response else 200
+            browser.close()
+            return html, status, None
+    except Exception as e:
+        return None, None, str(e)
+
+def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
+    """
+    Safely fetch HTML, parses, runs JS execution if needed, checks keywords, 
+    and passes extracted text directly to the text scam model.
     """
     result = {
         'fetched':            False,
@@ -217,11 +202,21 @@ def analyse_webpage_content(url: str, timeout: int = 6) -> dict:
         'suspicious_phrases': [],
         'content_snippet':    '',
         'error':              None,
-        # ── NEW: extracted webpage text run through the existing text scam
-        # model (scam_detector.pkl + vectorizer.pkl, via ml_model.predict) ──
         'text_model_label':       None,
         'text_model_probability': 0.0,
         'extracted_text_len':     0,
+        'debug_logs': {
+            'http_status': None,
+            'response_size': 0,
+            'html_size': 0,
+            'extracted_text_len': 0,
+            'extraction_method': 'None',
+            'js_rendering_used': False,
+            'reached_text_model': False,
+            'text_ml_prob': 0.0,
+            'rule_score': 0.0,
+            'final_hybrid_score': 0.0,
+        }
     }
 
     fetch_url = url.strip()
@@ -229,17 +224,156 @@ def analyse_webpage_content(url: str, timeout: int = 6) -> dict:
         fetch_url = 'http://' + fetch_url
     result['url_used'] = fetch_url
 
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+
+    html_content = ""
+    status_code = None
+    extraction_method = "Static HTML + BeautifulSoup"
+    js_rendering_used = False
+
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (compatible; CyberLensAI-Scanner/1.0)'}
-        resp = requests.get(fetch_url, headers=headers, timeout=timeout, allow_redirects=True)
-        resp.raise_for_status()
+        resp = requests.get(fetch_url, headers=headers, timeout=timeout, allow_redirects=True, verify=False)
+        status_code = resp.status_code
+        result['debug_logs']['http_status'] = status_code
+        result['debug_logs']['response_size'] = len(resp.content)
+        result['debug_logs']['html_size'] = len(resp.text)
 
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        for tag in soup(['script', 'style', 'noscript', 'head']):
+        is_cloudflare = False
+        server_header = resp.headers.get('Server', '').lower()
+        if 'cloudflare' in server_header or 'cloudflare' in resp.text.lower() or 'ray id' in resp.text.lower():
+            is_cloudflare = True
+
+        if status_code == 403:
+            if is_cloudflare:
+                result['error'] = "Access blocked by Cloudflare bot protection (HTTP 403)."
+            else:
+                result['error'] = "Access denied by website server (HTTP 403 Forbidden)."
+        elif status_code == 404:
+            result['error'] = "The website was not found (HTTP 404 Not Found)."
+        elif status_code >= 500:
+            result['error'] = f"The website server returned an error (HTTP {status_code})."
+        else:
+            resp.raise_for_status()
+            html_content = resp.text
+
+    except requests.exceptions.Timeout:
+        result['error'] = "The website took too long to respond (timeout)."
+    except requests.exceptions.SSLError:
+        result['error'] = "Could not verify the site's SSL certificate."
+    except requests.exceptions.ConnectionError:
+        result['error'] = "Could not connect to the website — it may be down, blocking requests, or connection refused."
+    except requests.exceptions.HTTPError:
+        status = resp.status_code if 'resp' in locals() else '?'
+        result['error'] = f"The website returned an error (HTTP {status})."
+    except Exception as e:
+        result['error'] = f"Unable to fetch this website: {str(e)}"
+
+    visible_text = ""
+    if html_content:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        for tag in soup(['script', 'style', 'noscript', 'head', 'svg', 'iframe']):
             tag.decompose()
-        visible_text = soup.get_text(separator=' ', strip=True)
-        visible_lower = visible_text.lower()
 
+        extracted_pieces = []
+        if soup.title and soup.title.string:
+            extracted_pieces.append(soup.title.string.strip())
+        
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        if meta_desc and meta_desc.get('content'):
+            extracted_pieces.append(meta_desc.get('content').strip())
+
+        for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span', 'button', 'label', 'li']):
+            style = tag.get('style', '')
+            if 'display:none' in style.replace(' ', '') or 'visibility:hidden' in style.replace(' ', ''):
+                continue
+            txt = tag.get_text(strip=True)
+            if txt:
+                extracted_pieces.append(txt)
+
+        for inp in soup.find_all('input'):
+            placeholder = inp.get('placeholder')
+            if placeholder:
+                extracted_pieces.append(placeholder.strip())
+            if inp.get('type') in ['button', 'submit'] and inp.get('value'):
+                extracted_pieces.append(inp.get('value').strip())
+
+        for img in soup.find_all('img'):
+            alt = img.get('alt')
+            if alt:
+                extracted_pieces.append(alt.strip())
+
+        visible_text = ' '.join(extracted_pieces)
+        visible_text = re.sub(r'\s+', ' ', visible_text).strip()
+
+        # JS Detection and rendering trigger
+        text_len = len(visible_text)
+        js_required = False
+        if text_len < 150:
+            js_required = True
+        else:
+            html_lower = html_content.lower()
+            if 'id="root"' in html_lower or 'id="app"' in html_lower or 'id="__next"' in html_lower or '<app-root>' in html_lower:
+                js_required = True
+
+        if js_required or result['error']:
+            try:
+                pw_html, pw_status, pw_err = fetch_via_playwright(fetch_url, timeout_ms=8000)
+                if pw_html:
+                    html_content = pw_html
+                    status_code = pw_status or 200
+                    result['error'] = None
+                    extraction_method = "Playwright rendering"
+                    js_rendering_used = True
+                    
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    for tag in soup(['script', 'style', 'noscript', 'head', 'svg', 'iframe']):
+                        tag.decompose()
+                        
+                    extracted_pieces = []
+                    if soup.title and soup.title.string:
+                        extracted_pieces.append(soup.title.string.strip())
+                    
+                    meta_desc = soup.find('meta', attrs={'name': 'description'})
+                    if meta_desc and meta_desc.get('content'):
+                        extracted_pieces.append(meta_desc.get('content').strip())
+
+                    for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span', 'button', 'label', 'li']):
+                        style = tag.get('style', '')
+                        if 'display:none' in style.replace(' ', '') or 'visibility:hidden' in style.replace(' ', ''):
+                            continue
+                        txt = tag.get_text(strip=True)
+                        if txt:
+                            extracted_pieces.append(txt)
+
+                    for inp in soup.find_all('input'):
+                        placeholder = inp.get('placeholder')
+                        if placeholder:
+                            extracted_pieces.append(placeholder.strip())
+                        if inp.get('type') in ['button', 'submit'] and inp.get('value'):
+                            extracted_pieces.append(inp.get('value').strip())
+
+                    for img in soup.find_all('img'):
+                        alt = img.get('alt')
+                        if alt:
+                            extracted_pieces.append(alt.strip())
+
+                    visible_text = ' '.join(extracted_pieces)
+                    visible_text = re.sub(r'\s+', ' ', visible_text).strip()
+            except ImportError:
+                if js_required:
+                    result['error'] = "This webpage requires JavaScript rendering. Static HTML contained insufficient content for analysis."
+            except Exception as e:
+                if js_required:
+                    result['error'] = f"This webpage requires JavaScript rendering, but browser automation failed: {str(e)}"
+
+    if visible_text and len(visible_text.strip()) >= 15:
+        visible_lower = visible_text.lower()
         found = [p for p in SCAM_CONTENT_PHRASES if p in visible_lower]
 
         result['fetched']            = True
@@ -247,38 +381,31 @@ def analyse_webpage_content(url: str, timeout: int = 6) -> dict:
         result['content_snippet']    = visible_text[:500]
         result['extracted_text_len'] = len(visible_text)
 
-        # ── NEW: run the extracted webpage text through the EXISTING text
-        # scam detection model (scam_detector.pkl + vectorizer.pkl via
-        # ml_model.predict). This reuses the same model used by the Text
-        # Scanner — no new model is trained. Wrapped in try/except so a
-        # model or text-length issue can never crash the URL scan; it just
-        # falls back to the rule-based signals already computed above.
+        reached_text_model = False
+        text_ml_prob = 0.0
+        text_model_label = None
         try:
-            if visible_text and len(visible_text.strip()) >= 15:
-                text_ml = ml_predict(visible_text[:5000])
-                result['text_model_label']       = text_ml.get('label')
-                result['text_model_probability'] = round(float(text_ml.get('probability', 0.0)), 4)
+            text_ml = ml_predict(visible_text[:5000])
+            text_model_label = text_ml.get('label')
+            text_ml_prob = round(float(text_ml.get('probability', 0.0)), 4)
+            result['text_model_label']       = text_model_label
+            result['text_model_probability'] = text_ml_prob
+            reached_text_model = True
         except Exception:
-            # Text-model scoring is best-effort; leave defaults (None/0.0)
-            # so the rest of the URL analysis proceeds unaffected.
             pass
 
-    except requests.exceptions.Timeout:
-        result['error'] = 'The website took too long to respond (timeout).'
-    except requests.exceptions.SSLError:
-        result['error'] = "Could not verify the site's SSL certificate."
-    except requests.exceptions.ConnectionError:
-        result['error'] = 'Could not connect to the website — it may be down or blocking requests.'
-    except requests.exceptions.HTTPError:
-        status = resp.status_code if 'resp' in locals() else '?'
-        result['error'] = f'The website returned an error (HTTP {status}).'
-    except Exception:
-        result['error'] = "Unable to fetch or analyse this website's content."
+        result['debug_logs']['reached_text_model'] = reached_text_model
+        result['debug_logs']['text_ml_prob'] = text_ml_prob
+        
+        # Calculate text rules core
+        from ml_model import rule_based_scam_score
+        result['debug_logs']['rule_score'] = rule_based_scam_score(visible_text)
+
+    result['debug_logs']['extracted_text_len'] = len(visible_text)
+    result['debug_logs']['extraction_method'] = extraction_method if visible_text else "Failed"
+    result['debug_logs']['js_rendering_used'] = js_rendering_used
 
     return result
-
-
-# ─── URL Analysis ─────────────────────────────────────────────────────────────────
 
 def analyse_url_full(url: str) -> dict:
     """Wrap utils.analyse_url with a friendly result envelope."""
@@ -298,19 +425,22 @@ def analyse_url_full(url: str) -> dict:
     if base['typosquat_risk']:      indicators.append('Possible typosquatting of known brand')
     if base['is_known_legit']:      indicators.append('Domain matches known legitimate site')
 
-    # ── NEW: Webpage content analysis (does not alter the URL heuristic above) ──
+    if '@' in url:
+        indicators.append('URL contains suspicious "@" character')
+    if '%' in url:
+        indicators.append('URL contains percent-encoded characters')
+    if any('redirection' in f for f in base['flags']):
+        indicators.append('URL contains suspicious redirection parameters')
+    if any('entropy' in f for f in base['flags']):
+        indicators.append('High string randomness/entropy')
+
     content_result = analyse_webpage_content(url)
     scam_phrases    = content_result.get('suspicious_phrases', [])
     if scam_phrases:
         indicators.append(f"Scam phrases found on page: {', '.join(scam_phrases[:4])}")
 
-    # Content-based signal is additive on top of the existing URL score, so the
-    # original URL detection logic/weights above remain completely unchanged.
     content_bonus = min(15 * len(scam_phrases), 45)
 
-    # ── NEW: Extracted webpage text scored by the existing text scam model
-    # (scam_detector.pkl + vectorizer.pkl). Additive, same pattern as the
-    # phrase-based content_bonus above, so nothing existing is disturbed.
     text_ml_prob  = content_result.get('text_model_probability', 0.0) or 0.0
     text_ml_label = content_result.get('text_model_label')
     if content_result.get('fetched') and text_ml_label is not None:
@@ -320,16 +450,9 @@ def analyse_url_full(url: str) -> dict:
             )
         elif text_ml_prob < 0.35:
             indicators.append("Webpage text rated as likely legitimate by text AI model")
-    # Trust the text model more when it strongly agrees the content is scammy;
-    # contributes up to +35 on top of the URL score.
+    
     text_ml_bonus = round(text_ml_prob * 35) if content_result.get('fetched') else 0
 
-    # ── NEW: Phishing URL ML model (trained on feature-engineered url.csv) ──────
-    # Runs as a separate pipeline from the text scam model, using the full
-    # structural + live-webpage feature set (Title, LineOfCode, CSS/JS counts,
-    # forms, redirects, etc). If no model/data is available it returns
-    # label='unknown' and contributes nothing, so behaviour for existing
-    # deployments without url.csv is completely unchanged.
     url_ml_result = url_ml_predict(url)
     ml_prob       = url_ml_result.get('probability', 0.0)
     ml_fetched    = url_ml_result.get('fetched', False)
@@ -342,42 +465,60 @@ def analyse_url_full(url: str) -> dict:
         else:
             indicators.append("AI model rates URL as likely legitimate")
 
-        # ML contributes up to +55 on top of the heuristic score. When the
-        # live webpage could be fetched, the model had access to page-level
-        # signals (forms, password fields, redirects, hidden iframes, etc.),
-        # so we trust it more — this is the main lever for reducing
-        # false-safe results, since the pure-heuristic score alone often
-        # misses JS-only or content-driven phishing pages.
         ml_bonus = round(ml_prob * (55 if ml_fetched else 40))
     else:
         ml_bonus = 0
 
-    # ── Reduce false-safes: if the ML model strongly disagrees with a "safe"
-    # heuristic verdict, don't let the heuristic silently win. This lifts the
-    # floor of the combined score rather than only adding a bonus, so a
-    # confident phishing prediction can't be washed out by a low base score.
     false_safe_floor = 0
     if url_ml_result.get('label') == 'phishing' and ml_prob >= 0.75:
         false_safe_floor = 65
     elif url_ml_result.get('label') == 'phishing' and ml_prob >= 0.60:
         false_safe_floor = 45
-    # If the extracted webpage text is strongly scam-like, don't let a low
-    # URL-only score wash that out either.
+
     if content_result.get('fetched') and text_ml_prob >= 0.80:
         false_safe_floor = max(false_safe_floor, 60)
     elif content_result.get('fetched') and text_ml_prob >= 0.65:
         false_safe_floor = max(false_safe_floor, 40)
 
-    final_score = max(min(rs + content_bonus + ml_bonus + text_ml_bonus, 100), false_safe_floor)
-    final_ri    = compute_risk_level(final_score) if (content_bonus or ml_bonus or text_ml_bonus or false_safe_floor) else ri
+    if base['typosquat_risk']:
+        false_safe_floor = max(false_safe_floor, 65)
+    if base['has_ip'] or '@' in url:
+        false_safe_floor = max(false_safe_floor, 55)
 
-    verdict = (
-        f"This URL shows {len(indicators)} phishing indicator(s) and is likely malicious."
-        if final_score >= 65 else
-        f"This URL has some suspicious characteristics ({len(indicators)} flag(s))."
-        if final_score >= 30 else
-        'This URL appears relatively safe, but always verify the source.'
-    )
+    final_score = max(min(rs + content_bonus + ml_bonus + text_ml_bonus, 100), false_safe_floor)
+    final_ri    = compute_risk_level(final_score)
+
+    indicators = list(dict.fromkeys(indicators))
+
+    # Explanation bullets
+    explanation_bullets = []
+    text_lower_all = (content_result.get('content_snippet', '') + " " + url).lower()
+    
+    if any(term in text_lower_all for term in ['registration fee', 'joining fee', 'processing fee', 'deposit', 'pay fee']):
+        explanation_bullets.append("✓ Registration/processing fee detected")
+    if any(term in text_lower_all for term in ['urgent', 'immediately', 'immediate', 'act now', 'limited offer', 'expiring', 'today only']):
+        explanation_bullets.append("✓ Urgent/time-pressure language detected")
+    if base['tld_risk'] > 0 or base['has_ip'] or base['typosquat_risk'] or '@' in url:
+        explanation_bullets.append("✓ Suspicious domain or TLD structure")
+    if len(scam_phrases) > 0 or len(base['suspicious_kw']) > 0:
+        explanation_bullets.append("✓ Scam/phishing keywords identified")
+    if (url_ml_result.get('label') == 'phishing' and ml_prob >= 0.5) or (text_ml_prob >= 0.5):
+        explanation_bullets.append("✓ Flagged with high confidence by AI threat models")
+
+    if explanation_bullets:
+        verdict = "This URL has been flagged with multiple high-risk indicators:\n\n" + "\n".join(explanation_bullets)
+    else:
+        if final_score >= 65:
+            verdict = "This URL shows strong phishing indicators and is likely malicious."
+        elif final_score >= 30:
+            verdict = "This URL has some suspicious characteristics. Exercise caution."
+        else:
+            verdict = "This URL appears relatively safe, but always verify the source."
+
+    debug_logs = content_result.get('debug_logs', {})
+    debug_logs['final_hybrid_score'] = final_score
+    debug_logs['url_ml_prob'] = ml_prob
+    debug_logs['url_heuristic_score'] = rs
 
     return {
         **base,
@@ -389,25 +530,20 @@ def analyse_url_full(url: str) -> dict:
         'indicators':      indicators,
         'suspicious_kws':  base['suspicious_kw'],
         'recommendations': get_recommendations(final_ri['level']),
-        'confidence':      min(90, 50 + final_score // 2),
+        'confidence':      min(95, max(50, int(max(ml_prob, text_ml_prob) * 100))),
         'scan_type':       'URL Scanner',
-        'content_analysis':content_result,   # NEW: used by the URL Scanner page UI
+        'content_analysis':content_result,
         'open_url':        content_result.get('url_used', url),
-        'url_ml_label':      url_ml_result.get('label', 'unknown'),      # NEW
-        'url_ml_probability':round(ml_prob * 100, 1),                    # NEW
-        'url_ml_fetched':    ml_fetched,                                 # NEW: whether live page features were used
-        'url_ml_fetch_error':url_ml_result.get('fetch_error'),           # NEW
-        # ── NEW: extracted webpage text scored via the existing text scam
-        # model (scam_detector.pkl + vectorizer.pkl) ─────────────────────
+        'url_ml_label':      url_ml_result.get('label', 'unknown'),
+        'url_ml_probability':round(ml_prob * 100, 1),
+        'url_ml_fetched':    ml_fetched,
+        'url_ml_fetch_error':url_ml_result.get('fetch_error'),
         'text_model_label':       content_result.get('text_model_label'),
         'text_model_probability': round(text_ml_prob * 100, 1),
+        'debug_logs':      debug_logs,
     }
 
-
-# ─── QR Code Analysis ─────────────────────────────────────────────────────────────
-
 def analyse_qr(image_bytes: bytes) -> dict:
-    """Decode a QR code from image bytes and analyse the extracted URL/text."""
     try:
         import cv2
         from PIL import Image
@@ -416,11 +552,9 @@ def analyse_qr(image_bytes: bytes) -> dict:
         pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
         cv_img  = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-        # ── Try OpenCV QRCodeDetector first ─────────────────────────────────────
         qr_detector = cv2.QRCodeDetector()
         qr_data, bbox, _ = qr_detector.detectAndDecode(cv_img)
 
-        # ── Fallback: try WeChatQRCode if available (more robust) ───────────────
         if not qr_data:
             try:
                 wechat_detector = cv2.wechat_qrcode_WeChatQRCode()
@@ -430,7 +564,6 @@ def analyse_qr(image_bytes: bytes) -> dict:
             except Exception:
                 pass
 
-        # ── Final fallback: try grayscale + threshold to improve detection ───────
         if not qr_data:
             gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -440,9 +573,7 @@ def analyse_qr(image_bytes: bytes) -> dict:
         if not qr_data:
             return {'error': 'No QR code detected in the image. Please ensure the QR code is clear, well-lit, and not blurry.'}
 
-        qr_type = 'QRCODE'   # OpenCV only decodes QR codes (not barcodes)
-
-        # Determine if it's a URL
+        qr_type = 'QRCODE'
         is_url  = qr_data.startswith(('http://', 'https://')) or '.' in qr_data.split('/')[0]
         result  = {'qr_data': qr_data, 'qr_type': qr_type, 'is_url': is_url}
 
@@ -461,11 +592,7 @@ def analyse_qr(image_bytes: bytes) -> dict:
     except Exception as e:
         return {'error': f'QR analysis failed: {str(e)}'}
 
-
-# ─── OCR Analysis ─────────────────────────────────────────────────────────────────
-
 def analyse_ocr_image(image_bytes: bytes) -> dict:
-    """Extract text via OCR, then run scam analysis on the extracted content."""
     try:
         import pytesseract
         from PIL import Image
@@ -488,11 +615,7 @@ def analyse_ocr_image(image_bytes: bytes) -> dict:
     except Exception as e:
         return {'error': f'OCR failed: {str(e)}'}
 
-
-# ─── PDF Analysis ─────────────────────────────────────────────────────────────────
-
 def analyse_pdf(pdf_bytes: bytes) -> dict:
-    """Extract text from PDF (first 3000 chars) and run scam analysis."""
     try:
         import pdfplumber
 
@@ -522,7 +645,6 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
         return analysis
 
     except ImportError:
-        # Fallback to PyPDF2
         try:
             import PyPDF2
             reader     = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
@@ -547,18 +669,13 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
     except Exception as e:
         return {'error': f'PDF analysis failed: {str(e)}'}
 
-
-# ─── Company / Recruiter Verification ─────────────────────────────────────────────
-
 def analyse_company(name: str, email: str, website: str) -> dict:
-    """Holistic company/recruiter legitimacy check."""
     parts = []
 
     company_result   = analyse_company_name(name)
     recruiter_result = analyse_recruiter_email(email) if email else None
     url_result       = analyse_url_full(website) if website else None
 
-    # Aggregate risk
     scores = [company_result['risk_score']]
     if recruiter_result:
         scores.append(70 if recruiter_result['is_free_mail'] else 10)
@@ -581,7 +698,7 @@ def analyse_company(name: str, email: str, website: str) -> dict:
         'risk_emoji':        ri['emoji'],
         'confidence':        min(90, 40 + int(combined)),
         'company_analysis':  company_result,
-        'recruiter_analysis':recruiter_result,
+        'recruiter_analysis': recruiter_result,
         'url_analysis':      url_result,
         'flags':             flags,
         'suspicious_kws':    flags[:8],

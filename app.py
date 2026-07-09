@@ -1397,14 +1397,46 @@ elif selected == "URL Scanner":
     if st.session_state.result_url:
         render_full_result(st.session_state.result_url)
 
-        # ══════════════════════════════════════════════════════════════
-        # NEW: Website Access Control + Content Analysis (URL Scanner only)
-        # Existing scanner logic/UI above is untouched — this section only
-        # extends the URL Scanner page with the new safe-open / block flow.
-        # ══════════════════════════════════════════════════════════════
+        # ── SYSTEM CONSOLE LOGGER (Detailed log requirements) ──────────────────
+        _logs = st.session_state.result_url.get("debug_logs", {})
+        print("\n" + "="*50)
+        print("[CyberLens AI - Live URL Scraper Debugger]")
+        print(f"URL String Checked  : {url_val}")
+        print(f"HTTP Return Status  : {_logs.get('http_status') or 'N/A'}")
+        print(f"Response Body Size  : {_logs.get('response_size')} bytes")
+        print(f"HTML Payload Size   : {_logs.get('html_size')} bytes")
+        print(f"Extracted Text Len  : {_logs.get('extracted_text_len')} characters")
+        print(f"Extraction Method   : {_logs.get('extraction_method')}")
+        print(f"JS Engine Run State : {_logs.get('js_rendering_used')}")
+        print(f"Scam Model Handoff  : {_logs.get('reached_text_model')}")
+        print(f"Text ML Probability : {_logs.get('text_ml_prob')}")
+        print(f"Text Rule Score     : {_logs.get('rule_score')}")
+        print(f"URL Heuristics Score: {_logs.get('url_heuristic_score')}")
+        print(f"URL Model Prob      : {_logs.get('url_ml_prob')}")
+        print(f"Final Combined Score: {_logs.get('final_hybrid_score')}/100")
+        print("="*50 + "\n")
+
+        # ── ADVANCED INTERACTIVE DEVELOPER METRICS EXPANDER ──────────────────────
+        with st.expander("🛠️ Advanced Debugging Logs", expanded=False):
+            st.code(f"""[CyberLens AI Debugger]
+URL Analyzed:              {url_val}
+HTTP Status Code:          {_logs.get('http_status') or 'N/A'}
+Response Raw Size:         {_logs.get('response_size')} bytes
+HTML Text Size:            {_logs.get('html_size')} bytes
+Extracted Text Length:     {_logs.get('extracted_text_len')} chars
+Extraction Method Used:    {_logs.get('extraction_method')}
+JS Rendering Used:         {_logs.get('js_rendering_used')}
+Reached Scam Text Model:   {_logs.get('reached_text_model')}
+Text Model Probability:    {_logs.get('text_ml_prob')}
+Text Heuristics Rule Score: {_logs.get('rule_score')}
+URL Heuristics Score:      {_logs.get('url_heuristic_score')}
+URL Model Probability:     {_logs.get('url_ml_prob')}%
+Final Hybrid Score:        {_logs.get('final_hybrid_score')}/100
+""")
+
         _url_result   = st.session_state.result_url
         _level        = _url_result.get("risk_level", "SAFE")
-        _is_safe_site = _level in ("SAFE", "LOW")          # SAFE/LOW → can open, MEDIUM/HIGH/CRITICAL → blocked
+        _is_safe_site = _level in ("SAFE", "LOW")
         _content      = _url_result.get("content_analysis", {})
         _scam_phrases = _content.get("suspicious_phrases", [])
         _open_url     = _url_result.get("open_url", url_val.strip())
@@ -1412,7 +1444,7 @@ elif selected == "URL Scanner":
         st.write("")
         H('<div class="cyber-divider"></div>')
 
-        # ── Suspicious Content Found (webpage text analysis) ────────────────
+        # ── Suspicious Content Found ────────────────
         section_header("Suspicious Content Found", "🕵️")
         if _content.get("error"):
             H(f'<div class="alert-warning">⚠️ Could not analyse page content — {_content["error"]}</div>')
@@ -1463,7 +1495,6 @@ elif selected == "URL Scanner":
                 </span>
             </div>''')
 
-            # ── Safety Tips ──────────────────────────────────────────────────
             st.write("")
             section_header("Safety Tips", "🛡️")
             _tips = [
@@ -1476,7 +1507,6 @@ elif selected == "URL Scanner":
             for i, tip in enumerate(_tips):
                 H(f'<div class="rec-item" style="animation-delay:{i*0.07}s">{tip}</div>')
 
-        # ── Downloadable Scan Report (includes content analysis) ─────────────
         st.write("")
         _report_lines = [
             "CYBERLENS AI — URL SCAN REPORT",
@@ -1506,7 +1536,6 @@ elif selected == "URL Scanner":
             use_container_width=True,
             key       ="url_report_dl",
         )
-
 
 # ══════════════════════════════════════════════════════════════════
 # PAGE: QR SCANNER
