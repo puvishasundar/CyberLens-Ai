@@ -523,18 +523,21 @@ def train_url_model(data_path: str = DATA_PATH) -> dict:
 # ─── Inference ──────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def load_url_artifact():
-    """Load (or train-and-save) the phishing URL ML artifact."""
-    if os.path.exists(MODEL_PATH):
-        try:
-            artifact = joblib.load(MODEL_PATH)
-            if not isinstance(artifact, dict):
-                artifact = {'pipeline': artifact, 'threshold': 0.5, 'feature_columns': FEATURE_COLUMNS}
-            artifact.setdefault('feature_columns', FEATURE_COLUMNS)
-            return artifact
-        except Exception:
-            pass
+if os.path.exists(DATA_PATH):
+    try:
+        result = train_url_model()
+        return {
+            'pipeline': result['pipeline'],
+            'threshold': result['threshold'],
+            'feature_columns': FEATURE_COLUMNS,
+        }
 
+    except Exception:
+        import traceback
+        print("\n===== ERROR TRAINING URL MODEL =====")
+        traceback.print_exc()
+        print("====================================\n")
+        
     if os.path.exists(DATA_PATH):
         try:
             result = train_url_model()
