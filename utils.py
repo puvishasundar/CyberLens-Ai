@@ -7,40 +7,14 @@ from urllib.parse import urlparse
 
 # ─── Suspicious Keyword Lexicon ─────────────────────────────────────────────────
 NEGATION_WORDS = {
-    "no",
-    "not",
-    "never",
-    "without",
-    "don't",
-    "doesn't",
-    "isn't",
-    "aren't",
-    "won't",
-    "free",
-    "no registration fee",
-    "no processing fee",
-    "no joining fee",
-    "no payment required",
-    "we never ask for otp",
-    "never share your password with anyone except",
-    "official website",
-    "official email",
-    "verified company",
-    "free of cost",
-    "no registration fee",
-    "no processing fee",
-    "no joining fee",
-    "no payment required",
-    "no advance payment",
-    "no security deposit",
-    "no hidden charges",
-    "we never ask for otp",
-    "never ask for otp",
-    "never share your otp",
-    "official website",
-    "official email",
-    "free of cost"
+    "no", "not", "never", "without", "don't", "doesn't", "isn't", "aren't", "won't",
+    "free", "no registration fee", "no processing fee", "no joining fee",
+    "no payment required", "we never ask for otp", "official website",
+    "official email", "verified company", "free of cost", "no advance payment",
+    "no security deposit", "no hidden charges", "never ask for otp",
+    "never share your otp", "official company website"
 }
+
 SCAM_KEYWORDS = {
     # Urgency / pressure
     'urgent': 3, 'immediate': 3, 'immediately': 3, 'limited offer': 3,
@@ -65,7 +39,7 @@ SCAM_KEYWORDS = {
     'click here': 2, 'verify your account': 3, 'confirm your account': 3,
     'your account is': 2, 'login to verify': 3, 'enter your password': 4,
     'reset your password': 2, 'suspicious activity': 1,
-    # ── NEW: OTP / KYC / Indian cyber fraud patterns ──────────────────────────
+    # OTP / KYC / Indian cyber fraud patterns
     'otp': 3, 'one time password': 4, 'share your otp': 5,
     'kyc update': 4, 'kyc verification': 4, 'complete your kyc': 4,
     'kyc expired': 4, 'aadhaar': 2, 'pan card': 2,
@@ -74,7 +48,7 @@ SCAM_KEYWORDS = {
     'you have won': 4, 'you won': 3, 'lucky winner': 4,
     'claim your prize': 4, 'lottery': 3, 'sweepstakes': 3,
     'congratulations you': 3, 'selected winner': 4,
-    # Job / placement scams (India-specific)
+    # Job / placement scams
     'placement fee': 5, 'joining fee': 5, 'training fee': 4,
     'offer letter fee': 5, 'hr team': 1, 'salary upto': 2,
     'ctc upto': 2, 'package upto': 2, 'dream job': 2,
@@ -86,8 +60,7 @@ SCAM_KEYWORDS = {
     'do not share': 2, 'confidential': 1, 'act immediately': 4,
     'your account will be': 3, 'account suspended': 4,
     'account blocked': 4, 'reactivate': 3,
-
-    # ── NEW: Courier / Customs / Delivery scams ───────────────────────────────
+    # Courier / Customs / Delivery scams
     'customs fee': 5, 'customs charge': 5, 'customs duty': 5,
     'clearance charges': 5, 'clearance fee': 5, 'customs clearance': 5,
     'package held': 5, 'parcel held': 5, 'parcel on hold': 5,
@@ -111,8 +84,7 @@ SCAM_KEYWORDS = {
     'return to sender': 3, 'returned to origin': 4,
     'pending customs': 5, 'pending clearance': 5, 'awaiting customs': 4,
     'storage charges': 4, 'warehouse fee': 4, 'holding fee': 4,
-
-    # ── NEW: Banking / financial impersonation scams ──────────────────────────
+    # Banking / financial impersonation scams
     'your card is blocked': 5, 'card blocked': 4, 'debit card blocked': 5,
     'credit card blocked': 5, 'card suspended': 4,
     'net banking blocked': 5, 'net banking suspended': 4,
@@ -125,8 +97,7 @@ SCAM_KEYWORDS = {
     'low interest loan': 4, 'personal loan approved': 4,
     'credit score': 2, 'cibil score': 3, 'improve cibil': 4,
     'cashback offer': 3, 'reward points expiring': 4, 'redeem points': 3,
-
-    # ── NEW: Investment / trading / crypto scams ──────────────────────────────
+    # Investment / trading / crypto scams
     'guaranteed returns': 5, 'guaranteed profit': 5, 'guaranteed 10x': 5,
     'double your money': 5, 'triple your money': 5,
     'risk free investment': 5, 'risk-free investment': 5,
@@ -140,8 +111,7 @@ SCAM_KEYWORDS = {
     'referral bonus': 3, 'refer and earn': 3, 'join our group': 3,
     'whatsapp group': 2, 'telegram group': 2,
     'sebi registered': 4, 'rbi approved': 5, 'government approved scheme': 5,
-
-    # ── NEW: Romance / social engineering scams ───────────────────────────────
+    # Romance / social engineering scams
     'gift card': 4, 'itunes gift card': 5, 'google play gift card': 5,
     'amazon gift card': 4, 'steam gift card': 4,
     'send gift card': 5, 'buy gift card': 4, 'gift card code': 5,
@@ -150,8 +120,7 @@ SCAM_KEYWORDS = {
     'emergency money': 4, 'hospital emergency': 4, 'stuck abroad': 4,
     'send money urgently': 5, 'money transfer urgently': 5,
     'western union': 4, 'moneygram': 4, 'hawala': 4,
-
-    # ── NEW: Government / authority impersonation scams ──────────────────────
+    # Government / authority impersonation scams
     'income tax notice': 5, 'income tax department': 4, 'it department': 3,
     'tax refund': 4, 'tds refund': 5, 'gst refund': 4,
     'cybercrime department': 5, 'cyber crime notice': 5,
@@ -165,30 +134,26 @@ SCAM_KEYWORDS = {
     'epfo': 3, 'pf withdrawal': 3, 'pf account': 2,
     'pm yojana': 3, 'government scheme': 2, 'subsidy approved': 4,
     'digital arrest': 5,
-
-    # ── NEW: Extended urgency / time-pressure patterns ────────────────────────
+    # Extended urgency / time-pressure patterns
     'last opportunity': 4, 'final notice': 4, 'final warning': 5,
     'do not ignore': 4, 'respond immediately': 4, 'reply immediately': 4,
     'do not delay': 4, 'time sensitive': 3, 'time-sensitive': 3,
     'expires in': 3, 'valid for': 2, 'offer expires': 3,
     'non-payment': 5, 'failure to pay': 5, 'if not paid': 5,
     'penalty': 3, 'fine': 2, 'legal consequences': 5,
-
-    # ── NEW: Social media / OTT / subscription scams ─────────────────────────
+    # Social media / OTT / subscription scams
     'your netflix': 3, 'netflix account': 3, 'netflix suspended': 4,
     'amazon prime': 2, 'prime account': 2, 'hotstar': 2,
     'instagram account': 2, 'facebook account': 2, 'account hacked': 4,
     'your instagram': 3, 'your facebook': 3,
     'free subscription': 4, 'free premium': 4, 'upgrade free': 4,
-
-    # ── NEW: Health / insurance scams ────────────────────────────────────────
+    # Health / insurance scams
     'insurance claim': 3, 'claim approved': 4, 'claim settlement': 4,
     'policy expired': 4, 'policy lapsed': 4, 'renew immediately': 4,
     'free health checkup': 3, 'free insurance': 4,
     'cashless treatment': 3, 'hospital cashless': 3,
     'covid relief': 4, 'relief fund': 4, 'compensation fund': 4,
-
-    # ── NEW: Additional scam/suspicious keywords (extended list v2) ──────────
+    # Additional scam/suspicious keywords
     'verify now': 4, 'click below': 3, 'limited time': 3,
     'claim reward': 4, 'claim prize': 4, 'lottery winner': 5,
     'jackpot': 4, 'selected randomly': 4, 'free iphone': 5,
@@ -197,34 +162,25 @@ SCAM_KEYWORDS = {
     'captcha typing job': 5, 'release payment': 5,
     'security alert': 3, 'unauthorized login': 4,
     'bank blocked': 5, 'kyc expired': 5,
-    'sim blocked': 5, 'identity suspension': 5,
-    'verification failed': 4, 'account disabled': 5,
-    'government notice': 4, 'income tax department': 4,
-    'cyber cell': 4, 'national security': 4,
+    'identity suspension': 5, 'verification failed': 4, 'account disabled': 5,
+    'government notice': 4, 'cyber cell': 4, 'national security': 4,
     'confidential investigation': 5, 'passport blocked': 5,
     'court order': 5, 'case id': 4, 'criminal activity detected': 5,
-    'suspicious activity detected': 4,
-    'click to verify': 4, 'login immediately': 4, 'verify identity': 4,
-    'update banking details': 5, 'reward expires today': 5,
-    'gift voucher': 3, 'international lottery': 5,
-    'whatsapp hr': 5, 'telegram manager': 5,
-    'contact payout officer': 5, 'activation fee': 5,
-    'registration charge': 4, 'remote salary': 4, 'overseas placement': 4,
-    'free visa': 4, 'free laptop': 4,
-    '100% guaranteed': 5, 'risk free investment': 5,
-    'instant payout': 5, 'otp sharing': 5,
-    'remote access': 4, 'screen sharing': 4,
-    'download apk': 5, 'install app': 3,
-    'tinyurl': 3, 'bit.ly': 3, 'rebrand.ly': 3,
-    'free recharge': 4, 'casino bonus': 4, 'betting reward': 4,
-    'adult verification': 5, 'confirm password': 4,
-    'wallet unlocked': 4, 'nft reward': 4,
-    'airdrop bonus': 4, 'mining income': 4,
-    'crypto wallet verification': 5, 'limited seats': 3,
-    'emergency alert': 4, 'red notice': 5, 'high priority warning': 4,
-    'user verification pending': 4, 'identity mismatch': 5,
-    'kyc mismatch': 5, 'banking restriction': 5,
-    'card suspended': 5, 'upi blocked': 5,
+    'suspicious activity detected': 4, 'click to verify': 4,
+    'login immediately': 4, 'verify identity': 4, 'update banking details': 5,
+    'reward expires today': 5, 'gift voucher': 3, 'international lottery': 5,
+    'whatsapp hr': 5, 'telegram manager': 5, 'contact payout officer': 5,
+    'activation fee': 5, 'registration charge': 4, 'remote salary': 4,
+    'overseas placement': 4, 'free visa': 4, 'free laptop': 4,
+    '100% guaranteed': 5, 'risk free investment': 5, 'instant payout': 5,
+    'otp sharing': 5, 'remote access': 4, 'screen sharing': 4,
+    'download apk': 5, 'install app': 3, 'tinyurl': 3, 'bit.ly': 3,
+    'rebrand.ly': 3, 'free recharge': 4, 'casino bonus': 4, 'betting reward': 4,
+    'adult verification': 5, 'confirm password': 4, 'wallet unlocked': 4,
+    'nft reward': 4, 'airdrop bonus': 4, 'mining income': 4,
+    'crypto wallet verification': 5, 'limited seats': 3, 'emergency alert': 4,
+    'red notice': 5, 'high priority warning': 4, 'user verification pending': 4,
+    'identity mismatch': 5, 'kyc mismatch': 5, 'banking restriction': 5,
     'login expired': 4, 'session timeout': 3, 'reactivate now': 5,
     'social media recovery': 4, 'instagram blue tick': 4,
     'youtube monetization reward': 4, 'copyright strike removal': 4,
@@ -233,137 +189,108 @@ SCAM_KEYWORDS = {
     'document mismatch': 5, 'suspicious transaction': 5,
     'wire transfer pending': 4, 'wire transfer failed': 4,
     'charity donation request': 4, 'humanitarian fund release': 5,
-    'un compensation fund': 5, 'foreign inheritance': 5,
-    'lucky draw': 4, 'bonus credited': 3, 'exclusive reward': 3,
-    # Emotional manipulation / social engineering
-    'fear': 2, 'panic': 3, 'last attempt': 5,
-    'important notice': 3, 'immediate response required': 5,
-    'avoid suspension': 4, 'avoid arrest': 5,
-    'secret reward': 4, 'special opportunity': 3,
-    'limited access': 3, 'do not ignore': 4,
-    'sensitive information': 3, 'strict action': 4,
-    'legal escalation': 5, 'final attempt': 5,
-    # Suspicious URL/path keyword mentions
-    'login-auth': 5, 'secure-update': 5, 'account-verify': 5,
-    'wallet-bonus': 5, 'reward-center': 5, 'gift-claim': 5,
-    'kyc-update': 4, 'banking-alert': 5, 'security-check': 4,
-    'identity-confirm': 5,
-
-    # ── NEW: Legal threat / cybercrime impersonation language ─────────────────
+    'un compensation fund': 5, 'foreign inheritance': 5, 'lucky draw': 4,
+    'bonus credited': 3, 'exclusive reward': 3, 'fear': 2, 'panic': 3,
+    'last attempt': 5, 'important notice': 3, 'immediate response required': 5,
+    'avoid suspension': 4, 'avoid arrest': 5, 'secret reward': 4,
+    'special opportunity': 3, 'limited access': 3, 'do not ignore': 4,
+    'sensitive information': 3, 'strict action': 4, 'legal escalation': 5,
+    'final attempt': 5, 'login-auth': 5, 'secure-update': 5,
+    'account-verify': 5, 'wallet-bonus': 5, 'reward-center': 5, 'gift-claim': 5,
+    'kyc-update': 4, 'banking-alert': 5, 'security-check': 4, 'identity-confirm': 5,
+    # Legal threat / cybercrime impersonation language
     'money laundering': 5, 'money laundering investigation': 5,
     'illegal transaction': 5, 'illegal transactions': 5,
     'illegal international': 5, 'fraudulent transaction': 5,
     'section 66': 5, 'section 66c': 5, 'section 66d': 5,
-    'it act': 4, 'information technology act': 4,
-    'legal complaint': 5, 'complaint filed': 5, 'complaint initiated': 5,
-    'case status': 4, 'case active': 5, 'case registered': 5,
-    'arrest approval': 5, 'arrest pending': 5, 'immediate arrest': 5,
-    'police action': 5, 'police will': 5, 'avoid police': 5,
-    'immediate escalation': 5, 'stop escalation': 5,
-    'biometric verification': 5, 'identity verification required': 4,
-    'account freeze': 5, 'bank account freeze': 5, 'freeze account': 5,
-    'passport blacklist': 5, 'blacklisted': 4, 'blacklist': 4,
-    'pan card suspension': 5, 'pan suspended': 5, 'pan deactivated': 5,
-    'financial monitoring': 5, 'monitoring enabled': 4,
-    'fir registration': 5, 'fir will be': 5, 'fir filed against': 5,
-    'new delhi': 2, 'cyber crime investigation': 5,
-    'national cyber': 5, 'cyber emergency': 5,
-    'respond within': 4, 'failure to respond': 5,
-    'within 20 minutes': 5, 'within 1 hour': 4,
-
-    # ── NEW: Fake job / overseas employment scam language ─────────────────────
+    'it act': 4, 'information technology act': 4, 'legal complaint': 5,
+    'complaint filed': 5, 'complaint initiated': 5, 'case status': 4,
+    'case active': 5, 'case registered': 5, 'arrest approval': 5,
+    'arrest pending': 5, 'immediate arrest': 5, 'police action': 5,
+    'police will': 5, 'avoid police': 5, 'immediate escalation': 5,
+    'stop escalation': 5, 'biometric verification': 5,
+    'identity verification required': 4, 'account freeze': 5,
+    'bank account freeze': 5, 'freeze account': 5, 'passport blacklist': 5,
+    'blacklisted': 4, 'blacklist': 4, 'pan card suspension': 5,
+    'financial monitoring': 5, 'monitoring enabled': 4, 'fir registration': 5,
+    'fir will be': 5, 'fir filed against': 5, 'new delhi': 2,
+    'cyber crime investigation': 5, 'national cyber': 5, 'cyber emergency': 5,
+    'respond within': 4, 'failure to respond': 5, 'within 20 minutes': 5,
+    'within 1 hour': 4,
+    # Fake job / overseas employment scam language
     'approved without interview': 5, 'selected without interview': 5,
-    'no interview required': 5, 'direct approval': 4,
-    'overseas job': 4, 'overseas remote': 4, 'overseas opportunity': 4,
-    'international hiring': 5, 'international hiring database': 5,
-    'employee activation': 5, 'activate now': 4, 'activate immediately': 5,
-    'offer letter fee': 5, 'receive offer letter': 4,
-    'laptop shipment': 4, 'laptop will be sent': 4, 'free laptop': 4,
-    'whatsapp hr': 4, 'contact hr on whatsapp': 5,
-    'hr manager whatsapp': 5, 'whatsapp number': 3,
-    'digital operations': 3, 'remote selection': 4,
-    'name will be removed': 5, 'permanently remove': 5, 'removed from database': 5,
-    'salary package': 3, 'monthly salary': 2, 'ctc': 2,
-    'shortlisted': 3, 'resume shortlisted': 4, 'profile shortlisted': 4,
-    'hiring database': 5, 'global hiring': 3,
-    'activate today': 4, 'activate your account today': 4,
-    'overseas salary': 4, 'foreign salary': 4,
-
-    # ── NEW: UPI-specific scam patterns ───────────────────────────────────────
+    'no interview required': 5, 'direct approval': 4, 'overseas job': 4,
+    'overseas remote': 4, 'overseas opportunity': 4, 'international hiring': 5,
+    'international hiring database': 5, 'employee activation': 5,
+    'activate now': 4, 'activate immediately': 5, 'receive offer letter': 4,
+    'laptop shipment': 4, 'laptop will be sent': 4, 'contact hr on whatsapp': 5,
+    'hr manager whatsapp': 5, 'whatsapp number': 3, 'digital operations': 3,
+    'remote selection': 4, 'name will be removed': 5, 'permanently remove': 5,
+    'removed from database': 5, 'salary package': 3, 'monthly salary': 2,
+    'ctc': 2, 'shortlisted': 3, 'resume shortlisted': 4, 'profile shortlisted': 4,
+    'hiring database': 5, 'global hiring': 3, 'activate today': 4,
+    'activate your account today': 4, 'overseas salary': 4, 'foreign salary': 4,
+    # UPI-specific scam patterns
     'upi pin': 5, 'enter upi pin': 5, 'enter your upi pin': 5,
-    'upi pin to receive': 5, 'share upi pin': 5,
-    'collect request': 4, 'payment request': 4, 'approve request': 4,
-    'accept collect request': 5, 'scan to receive': 5, 'scan qr to receive': 5,
-    'scan this qr': 4, 'scan the qr code': 4, 'qr code payment': 3,
-    'qr to receive money': 5, 'qr for refund': 5, 'refund qr': 5,
-    'upi id blocked': 5, 'upi transaction failed': 4, 'upi deactivated': 5,
-    'gpay support': 4, 'phonepe support': 4, 'paytm support': 4,
-    'bhim upi': 3, 'upi mandate': 4, 'auto debit mandate': 4,
-    'money will be credited': 4, 'receive payment scan': 5,
-
-    # ── NEW: QR code scam patterns ────────────────────────────────────────────
+    'upi pin to receive': 5, 'share upi pin': 5, 'collect request': 4,
+    'payment request': 4, 'approve request': 4, 'accept collect request': 5,
+    'scan to receive': 5, 'scan qr to receive': 5, 'scan this qr': 4,
+    'scan the qr code': 4, 'qr code payment': 3, 'qr to receive money': 5,
+    'qr for refund': 5, 'refund qr': 5, 'upi id blocked': 5,
+    'upi transaction failed': 4, 'upi deactivated': 5, 'gpay support': 4,
+    'phonepe support': 4, 'paytm support': 4, 'bhim upi': 3, 'upi mandate': 4,
+    'auto debit mandate': 4, 'money will be credited': 4, 'receive payment scan': 5,
+    # QR code scam patterns
     'qr code expired': 4, 'update qr code': 4, 'new qr code': 3,
     'scan and win': 5, 'scan to claim': 5, 'scan to unlock': 4,
     'malicious qr': 3, 'qr code scam': 5,
-
-    # ── NEW: Electricity / utility bill scams ─────────────────────────────────
+    # Electricity / utility bill scams
     'electricity bill': 3, 'electricity bill due': 4, 'power bill overdue': 4,
     'electricity disconnected': 5, 'power disconnection': 5,
     'electricity disconnection tonight': 5, 'meter disconnected': 5,
     'pay electricity bill immediately': 5, 'discom': 3, 'eb office': 3,
-    'update meter details': 4, 'smart meter update': 4,
-    'electricity board': 2, 'bill overdue': 3, 'last date to pay bill': 4,
-    'gas connection blocked': 4, 'water bill overdue': 3,
-
-    # ── NEW: Scholarship / education fee scams ────────────────────────────────
+    'update meter details': 4, 'smart meter update': 4, 'electricity board': 2,
+    'bill overdue': 3, 'last date to pay bill': 4, 'gas connection blocked': 4,
+    'water bill overdue': 3,
+    # Scholarship / education fee scams
     'scholarship approved': 5, 'scholarship selected': 4, 'scholarship offer': 4,
     'scholarship fee': 5, 'processing fee for scholarship': 5,
     'scholarship amount credited': 4, 'education loan approved': 4,
     'fee waiver': 3, 'admission confirmed': 3, 'seat confirmed fee': 4,
     'management quota': 3, 'nsp scholarship': 3, 'national scholarship portal': 2,
     'university grant': 3, 'grant disbursement': 4, 'scholarship disbursement': 4,
-
-    # ── NEW: Online shopping / e-commerce scams ───────────────────────────────
+    # Online shopping / e-commerce scams
     'order cancelled refund': 4, 'order refund pending': 4,
     'cash on delivery fraud': 4, 'fake order confirmation': 4,
-    'order not delivered': 3, 'wrong product refund': 3,
-    'return pickup fee': 4, 'exchange fee': 4, 'flipkart order': 2,
-    'amazon order': 2, 'myntra order': 2, 'meesho order': 2,
-    'huge discount today only': 4, 'flash sale': 2, 'mega sale 90% off': 4,
-    'fake online store': 5, 'suspicious checkout page': 4,
+    'order not delivered': 3, 'wrong product refund': 3, 'return pickup fee': 4,
+    'exchange fee': 4, 'flipkart order': 2, 'amazon order': 2, 'myntra order': 2,
+    'meesho order': 2, 'huge discount today only': 4, 'flash sale': 2,
+    'mega sale 90% off': 4, 'fake online store': 5, 'suspicious checkout page': 4,
     'pay to confirm order': 5, 'advance payment for delivery': 5,
-
-    # ── NEW: AI voice / deepfake scams ────────────────────────────────────────
+    # AI voice / deepfake scams
     'ai voice clone': 5, 'voice cloning': 5, 'cloned voice': 5,
     'deepfake video': 5, 'deepfake call': 5, 'ai generated video': 4,
     'fake video call': 5, 'video call from unknown officer': 5,
     'this is your son': 4, 'this is your daughter': 4,
     'emergency call from relative': 4, 'kidnapped': 4, 'accident emergency money': 5,
     'voice message urgent': 4, 'synthetic voice': 4, 'ai impersonation': 5,
-
-    # ── NEW: Gaming and reward app scams ──────────────────────────────────────
+    # Gaming and reward app scams
     'gaming reward': 4, 'game winning amount': 4, 'withdraw winnings': 4,
     'rummy bonus': 4, 'ludo cash bonus': 4, 'betting app bonus': 4,
-    'fantasy app winnings': 4, 'app download bonus': 3,
-    'refer app earn cash': 4, 'task completion reward': 4,
-    'survey reward': 3, 'click and earn': 4, 'watch ad and earn': 3,
-    'spin and win': 4, 'daily check in reward': 3, 'redeem cash reward': 4,
-
-    # ── NEW: Fake customer care / helpline scams ──────────────────────────────
+    'fantasy app winnings': 4, 'app download bonus': 3, 'refer app earn cash': 4,
+    'task completion reward': 4, 'survey reward': 3, 'click and earn': 4,
+    'watch ad and earn': 3, 'spin and win': 4, 'daily check in reward': 3,
+    'redeem cash reward': 4,
+    # Fake customer care / helpline scams
     'customer care number': 3, 'toll free helpline': 3, 'fake customer care': 5,
     'call this number for refund': 5, 'call this number to resolve': 4,
-    'complaint number': 3, 'escalation number': 3,
-    'talk to our agent': 3, 'connect with agent': 3,
-
-    # ── NEW: Referral / MLM scams ──────────────────────────────────────────────
+    'complaint number': 3, 'escalation number': 3, 'talk to our agent': 3,
+    'connect with agent': 3,
+    # Referral / MLM scams
     'mlm scheme': 4, 'multi level marketing': 3, 'network marketing income': 4,
     'refer 5 friends': 4, 'invite and earn': 4, 'downline income': 4,
     'binary income plan': 5, 'join with small investment': 4,
 }
-
-
-# ─── Safe / Legit Keyword Whitelist ─────────────────────────────────────────────
-# These words reduce suspicion when found — typical in genuine communication
 
 SAFE_KEYWORDS = {
     'meeting', 'schedule', 'rescheduled', 'project', 'assignment', 'submission',
@@ -396,40 +323,24 @@ SAFE_KEYWORDS = {
     'welcome aboard', 'employee onboarding', 'coding round',
     'assessment test', 'interview slot', 'review pending', 'workshop',
     'certificate', 'congratulations on selection', 'campus drive',
-    'team collaboration',    "no registration fee",
-    "no processing fee",
-    "no joining fee",
-    "no payment required",
-    "no advance payment",
-    "no security deposit",
-    "no hidden charges",
-    "we never ask for otp",
-    "never ask for otp",
-    "never share your otp",
-    "official website",
-    "official email",
-    "free of cost"
+    'team collaboration'
 }
+
 SAFE_PHRASES = [
-    "no registration fee",
-    "no processing fee",
-    "no joining fee",
-    "no payment required",
-    "no advance payment",
-    "no security deposit",
-    "no hidden charges",
-    "we never ask for otp",
-    "never ask for otp",
-    "never share your otp",
-    "official website",
-    "official email",
-    "official company website",
-    "free of cost",
+    "no registration fee", "no processing fee", "no joining fee",
+    "no payment required", "no advance payment", "no security deposit",
+    "no hidden charges", "we never ask for otp", "never ask for otp",
+    "never share your otp", "official website", "official email",
+    "official company website", "free of cost"
 ]
+
 PHISHING_URL_PATTERNS = [
     r'login', r'signin', r'verify', r'secure', r'account', r'update',
     r'confirm', r'banking', r'paypal', r'amazon', r'google', r'microsoft',
     r'apple', r'support', r'help', r'alert', r'notification', r'reset',
+    r'lucky', r'money', r'win', r'share', r'invitation', r'bonus', r'gift',
+    r'prize', r'reward', r'claim', r'pay', r'crypto', r'wallet', r'refund',
+    r'card', r'loan', r'free', r'earn', r'cash', r'deposit', r'giving',
 ]
 
 LEGIT_DOMAINS = {
@@ -438,21 +349,18 @@ LEGIT_DOMAINS = {
     'paypal.com', 'naukri.com', 'indeed.com', 'glassdoor.com',
     'infosys.com', 'wipro.com', 'tcs.com', 'hcltech.com',
     'accenture.com', 'ibm.com', 'deloitte.com', 'amazon.in',
-    'flipkart.com', 'zoho.com', 'freshworks.com',
+    'flipkart.com', 'zoho.com', 'freshworks.com'
 }
 
 SCAM_TLD_RISK = {
     '.xyz': 4, '.top': 4, '.click': 4, '.loan': 4, '.work': 3,
     '.pw': 4, '.gq': 4, '.cf': 4, '.tk': 4, '.ml': 3, '.ga': 3,
-    '.win': 3, '.bid': 3, '.review': 3, '.country': 3,
+    '.win': 3, '.bid': 3, '.review': 3, '.country': 3
 }
-
-# ─── Risk Scoring ────────────────────────────────────────────────────────────────
 
 def score_keywords(text: str) -> dict:
     text_lower = text.lower()
 
-    # Remove safe phrases first
     for phrase in SAFE_PHRASES:
         text_lower = text_lower.replace(phrase, "")
 
@@ -460,47 +368,26 @@ def score_keywords(text: str) -> dict:
     total = 0
 
     for kw, weight in SCAM_KEYWORDS.items():
-
         for match in re.finditer(re.escape(kw), text_lower):
-
-            # Look 4 words before keyword
             before = text_lower[max(0, match.start()-35):match.start()]
-
             words = before.split()
-
-            # Ignore if negation exists
             if any(word in NEGATION_WORDS for word in words):
                 continue
 
             found[kw] = weight
             total += weight
 
-    # -----------------------------
-    # Bonus scoring for combinations
-    # -----------------------------
-
     combos = [
-
         (["registration fee", "urgent"], 3),
-
         (["registration fee", "immediately"], 3),
-
         (["otp", "bank"], 4),
-
         (["lottery", "claim"], 4),
-
         (["kyc", "account blocked"], 5),
-
         (["offer letter", "fee"], 5),
-
         (["click here", "verify"], 4),
-
         (["bitcoin", "investment"], 5),
-
         (["work from home", "guaranteed"], 4),
-
         (["gift card", "send"], 5)
-
     ]
 
     for keywords, bonus in combos:
@@ -517,28 +404,20 @@ def compute_risk_level(score: float) -> dict:
     if score >= 81:
         return {'level': 'CRITICAL', 'color': '#ef4444', 'emoji': '🔴'}
     elif score >= 61:
-        return {'level': 'HIGH',     'color': '#f59e0b', 'emoji': '🟠'}
+        return {'level': 'HIGH',     'color': '#f97316', 'emoji': '🟠'}
     elif score >= 41:
-        return {'level': 'MEDIUM',   'color': '#f59e0b', 'emoji': '🟡'}
+        return {'level': 'MEDIUM',   'color': '#ffb340', 'emoji': '🟡'}
     elif score >= 21:
         return {'level': 'LOW',      'color': '#3b82f6', 'emoji': '🔵'}
     else:
-        return {'level': 'SAFE',     'color': '#10b981', 'emoji': '🟢'}
+        return {'level': 'SAFE',     'color': '#00ff9d', 'emoji': '🟢'}
 
 def normalise_score(raw: float, ceiling: float = 20.0) -> float:
-    """Map a raw keyword score (0 → ceiling+) to 0–100 linearly.
-    Ceiling = 20: calibrated against real-world scam messages which score 15–29 raw.
-    Linear mapping keeps the output intuitive and predictable.
-    Scores above ceiling are capped at 100.
-    """
     return round(min(raw / ceiling, 1.0) * 100, 1)
-
-# ─── URL Analysis ────────────────────────────────────────────────────────────────
 
 def analyse_url(url: str) -> dict:
     """
     Heuristic phishing / suspicious URL analysis.
-    Returns a rich result dict.
     """
     result = {
         'url':           url,
@@ -557,7 +436,6 @@ def analyse_url(url: str) -> dict:
         'flags':         [],
     }
 
-    # ── Basic parse ──────────────────────────────────────────────────────────────
     url_clean = url.strip()
     if not url_clean.startswith(('http://', 'https://')):
         url_clean = 'http://' + url_clean
@@ -574,47 +452,106 @@ def analyse_url(url: str) -> dict:
     domain             = parsed.netloc.lower().replace('www.', '')
     result['domain']   = domain
 
-    # ── TLD ──────────────────────────────────────────────────────────────────────
-    tld_match = re.search(r'\.[a-z]{2,}$', domain)
+    tld_match = re.search(r'\.[a-z0-9]{2,}$', domain)
     tld = tld_match.group(0) if tld_match else ''
     result['tld'] = tld
     result['tld_risk'] = SCAM_TLD_RISK.get(tld, 0)
 
-    # ── IP address as domain ─────────────────────────────────────────────────────
+    # 1. IP address as domain
     if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', domain.split(':')[0]):
         result['has_ip'] = True
         result['flags'].append('IP address used as domain (high risk)')
 
-    # ── URL length ───────────────────────────────────────────────────────────────
+    # 2. URL length
     if len(url) > 75:
         result['is_long'] = True
         result['flags'].append(f'Unusually long URL ({len(url)} chars)')
 
-    # ── Suspicious keywords in URL ───────────────────────────────────────────────
+    # 3. Suspicious keywords in URL
     url_lower = url.lower()
-    found_kw  = [p for p in PHISHING_URL_PATTERNS if re.search(p, url_lower)]
+    found_kw = [p for p in PHISHING_URL_PATTERNS if re.search(p, url_lower)]
     result['suspicious_kw'] = found_kw
 
-    # ── Known legit domain ───────────────────────────────────────────────────────
-    result['is_known_legit'] = any(domain.endswith(ld) for ld in LEGIT_DOMAINS)
+    # 4. Known legit domain
+    result['is_known_legit'] = any(domain == ld or domain.endswith('.' + ld) for ld in LEGIT_DOMAINS)
 
-    # ── Typosquatting rough check ────────────────────────────────────────────────
+    # 5. Typosquatting
     for legit in LEGIT_DOMAINS:
         core = legit.split('.')[0]
-        if core in domain and not domain.endswith(legit):
+        if core in domain and not (domain == legit or domain.endswith('.' + legit)):
             result['typosquat_risk'] = True
             result['flags'].append(f'Possible typosquatting of {legit}')
             break
 
-    # ── Compute risk score ───────────────────────────────────────────────────────
+    # 6. Check @ symbol
+    if '@' in url_clean:
+        result['flags'].append('URL contains "@" character (highly suspicious)')
+
+    # 7. Check percent encoding
+    if '%' in url_clean:
+        result['flags'].append('URL contains percent-encoded characters')
+
+    # 8. Check redirect parameters
+    redirect_params = ['redirect', 'url', 'link', 'next', 'destination', 'return', 'to']
+    query_lower = parsed.query.lower()
+    for param in redirect_params:
+        if f'{param}=' in query_lower:
+            result['flags'].append(f'URL contains redirection parameter: "{param}"')
+            break
+
+    # 9. Digits ratio check
+    digit_count = sum(c.isdigit() for c in url_clean)
+    digit_ratio = digit_count / len(url_clean) if len(url_clean) > 0 else 0
+    if digit_ratio > 0.15:
+        result['flags'].append(f'High ratio of digits in URL ({round(digit_ratio*100)}%)')
+
+    # 10. Special character count check
+    special_chars = sum(1 for c in url_clean if c in ['-', '_', '=', '?', '&', '%', '$', '@', '+'])
+    if special_chars > 8:
+        result['flags'].append(f'Unusually high number of special characters ({special_chars})')
+
+    # 11. Entropy check
+    def shannon_entropy(s: str) -> float:
+        if not s:
+            return 0.0
+        from collections import Counter
+        counts = Counter(s)
+        length = len(s)
+        return -sum((c / length) * math.log2(c / length) for c in counts.values())
+
+    ent = shannon_entropy(url_clean)
+    if ent > 4.5:
+        result['flags'].append(f'High URL entropy ({round(ent, 2)})')
+
+    # Compute heuristic risk score
     score = 0
-    if not result['is_https']:    score += 25          # HTTP is a strong signal
-    if result['has_ip']:          score += 35          # IP domains are almost always malicious
-    if result['is_long']:         score += 12
-    if result['suspicious_kw']:   score += len(result['suspicious_kw']) * 8   # was 5
-    if result['tld_risk']:        score += result['tld_risk'] * 8             # was 6
-    if result['typosquat_risk']:  score += 35          # typosquatting is very high risk
-    if result['is_known_legit']:  score = max(0, score - 40)
+    if not result['is_https']:
+        score += 25
+    if result['has_ip']:
+        score += 35
+    if result['is_long']:
+        score += 12
+    if result['suspicious_kw']:
+        score += len(result['suspicious_kw']) * 12
+    if result['tld_risk']:
+        score += result['tld_risk'] * 10
+    if result['typosquat_risk']:
+        score += 40
+    if '@' in url_clean:
+        score += 30
+    if '%' in url_clean:
+        score += 8
+    if any('redirection parameter' in f for f in result['flags']):
+        score += 15
+    if digit_ratio > 0.15:
+        score += 10
+    if special_chars > 8:
+        score += 12
+    if ent > 4.5:
+        score += 10
+
+    if result['is_known_legit']:
+        score = max(0, score - 60)
 
     score = min(score, 100)
     result['risk_score']  = score
@@ -622,9 +559,6 @@ def analyse_url(url: str) -> dict:
     result['trust_score'] = max(0, 100 - score)
 
     return result
-
-
-# ─── Recruiter / Company Analysis ────────────────────────────────────────────────
 
 FAKE_RECRUITER_SIGNALS = [
     'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
@@ -638,7 +572,6 @@ SUSPICIOUS_COMPANY_WORDS = [
 ]
 
 def analyse_recruiter_email(email: str) -> dict:
-    """Check if a recruiter email looks suspicious."""
     email  = email.lower().strip()
     domain = email.split('@')[-1] if '@' in email else ''
     risky  = domain in FAKE_RECRUITER_SIGNALS
@@ -650,9 +583,7 @@ def analyse_recruiter_email(email: str) -> dict:
         'note': 'Legitimate companies use corporate email domains, not free providers.' if risky else 'Domain looks professional.'
     }
 
-
 def analyse_company_name(name: str) -> dict:
-    """Heuristic check on a company name."""
     name_lower = name.lower()
     matches    = [w for w in SUSPICIOUS_COMPANY_WORDS if w in name_lower]
     score      = min(len(matches) * 20, 80)
@@ -663,9 +594,6 @@ def analyse_company_name(name: str) -> dict:
         'risk_level':       compute_risk_level(score),
     }
 
-
-# ─── Session Stats Helpers ───────────────────────────────────────────────────────
-
 def make_empty_stats() -> dict:
     return {
         'total_scans':    0,
@@ -673,9 +601,8 @@ def make_empty_stats() -> dict:
         'safe_scans':     0,
         'critical':       0,
         'risk_scores':    [],
-        'scan_history':   [],   # list of {'type', 'verdict', 'score', 'ts'}
+        'scan_history':   [],
     }
-
 
 def update_stats(stats: dict, verdict: str, risk_score: float, scan_type: str) -> dict:
     import datetime
@@ -699,7 +626,6 @@ def update_stats(stats: dict, verdict: str, risk_score: float, scan_type: str) -
         'ts':      datetime.datetime.now().strftime('%H:%M:%S'),
     })
     return stats
-
 
 def avg_risk(stats: dict) -> float:
     scores = stats.get('risk_scores', [])
