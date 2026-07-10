@@ -497,7 +497,61 @@ def render_full_result(result: dict) -> None:
         for key, (icon, label) in _url_field_labels.items()
         if key in result
     }
-    if url_detail_items:
+
+    # AI URL model verdict — label, confidence, fetch status, and top signals
+    # (computed in analyzer.analyse_url_full() via url_model.predict_url() /
+    # get_feature_importance_url(), Stage 2).
+    _url_ml_label   = result.get("url_ml_label")
+    _url_ml_prob    = result.get("url_ml_probability")
+    _url_ml_fetched = result.get("url_ml_fetched")
+    _url_ml_error   = result.get("url_ml_fetch_error")
+    _fetch_note     = result.get("fetch_note")
+    _url_ml_signals = result.get("url_ml_top_signals") or []
+
+    _has_ai_panel = _url_ml_label is not None and _url_ml_label != "unknown"
+    _ai_rows_count = 0
+
+    if _has_ai_panel:
+        _label_color = "#ff3366" if _url_ml_label == "phishing" else "#00ff9d"
+        ai_rows = (
+            f'<div class="data-row"><span class="dr-icon">🤖</span>'
+            f'<span class="dr-label">AI Model Verdict</span>'
+            f'<span class="dr-val" style="color:{_label_color};font-weight:700;text-transform:uppercase">{_url_ml_label}</span></div>'
+            f'<div class="data-row"><span class="dr-icon">📈</span>'
+            f'<span class="dr-label">AI Confidence</span>'
+            f'<span class="dr-val">{_url_ml_prob}%</span></div>'
+            f'<div class="data-row"><span class="dr-icon">📡</span>'
+            f'<span class="dr-label">Live Fetch Used</span>'
+            f'<span class="dr-val">{"Yes" if _url_ml_fetched else "No (fallback to static features)"}</span></div>'
+        )
+        _ai_rows_count = 3
+        if _fetch_note:
+            ai_rows += (
+                f'<div class="data-row"><span class="dr-icon">📝</span>'
+                f'<span class="dr-label">Fetch Note</span>'
+                f'<span class="dr-val" style="color:#5a7a9a">{_fetch_note}</span></div>'
+            )
+            _ai_rows_count += 1
+        if _url_ml_error:
+            ai_rows += (
+                f'<div class="data-row"><span class="dr-icon">⚠️</span>'
+                f'<span class="dr-label">Fetch Error</span>'
+                f'<span class="dr-val" style="color:#f97316">{_url_ml_error}</span></div>'
+            )
+            _ai_rows_count += 1
+
+        if _url_ml_signals:
+            _signal_chips = "".join(f'<span class="kw-chip">{sig}</span>' for sig in _url_ml_signals[:8])
+            ai_rows += (
+                f'<div style="margin-top:0.6rem;line-height:2.4">'
+                f'<span class="dr-label" style="display:block;margin-bottom:0.3rem">Top Contributing Signals</span>'
+                f'{_signal_chips}</div>'
+            )
+            _ai_rows_count += 1
+    else:
+        ai_rows = ""
+
+    if url_detail_items or _has_ai_panel:
         url_rows = "".join(
             f'<div class="data-row"><span class="dr-icon">{icon}</span>'
             f'<span class="dr-label">{label}</span>'
@@ -513,10 +567,16 @@ def render_full_result(result: dict) -> None:
                 f'<span class="dr-val" style="color:#f97316">{f}</span></div>'
                 for f in url_flags
             )
+        _ai_section_html = (
+            f'<div style="margin-top:0.75rem">'
+            f'<span class="dr-label" style="display:block;margin-bottom:0.3rem;color:#00d4ff;letter-spacing:.08em;text-transform:uppercase;font-size:0.65rem">🤖 AI URL Model</span>'
+            f'{ai_rows}</div>'
+        ) if _has_ai_panel else ""
         url_details_html = (
             f'<div class="cyber-divider" style="margin:1.25rem 0"></div>'
             f'<div class="section-header">🌐 URL Details</div>'
             f'<div style="margin-top:0.5rem">{url_rows}</div>'
+            f'{_ai_section_html}'
         )
     else:
         url_details_html = ""
@@ -535,7 +595,7 @@ def render_full_result(result: dict) -> None:
     _kw_rows  = max(1, len(kws) // 4)
     _rec_rows = len(recs)
     _url_rows = len(url_detail_items) if url_detail_items else 0
-    _height   = 700 + (_kw_rows * 40) + (_rec_rows * 65) + (_url_rows * 48)
+    _height   = 700 + (_kw_rows * 40) + (_rec_rows * 65) + (_url_rows * 48) + (_ai_rows_count * 48)
 
     import streamlit.components.v1 as components
     components.html(f"""
@@ -1413,6 +1473,8 @@ elif selected == "URL Scanner":
         print(f"Text Rule Score     : {_logs.get('rule_score')}")
         print(f"URL Heuristics Score: {_logs.get('url_heuristic_score')}")
         print(f"URL Model Prob      : {_logs.get('url_ml_prob')}")
+        print(f"URL Model Top Signals: {_logs.get('url_ml_top_signals')}")
+        print(f"URL Model Fetch Note: {_logs.get('url_ml_fetch_note')}")
         print(f"Final Combined Score: {_logs.get('final_hybrid_score')}/100")
         print("="*50 + "\n")
 
@@ -1431,6 +1493,8 @@ Text Model Probability:    {_logs.get('text_ml_prob')}
 Text Heuristics Rule Score: {_logs.get('rule_score')}
 URL Heuristics Score:      {_logs.get('url_heuristic_score')}
 URL Model Probability:     {_logs.get('url_ml_prob')}%
+URL Model Top Signals:     {_logs.get('url_ml_top_signals')}
+URL Model Fetch Note:      {_logs.get('url_ml_fetch_note')}
 Final Hybrid Score:        {_logs.get('final_hybrid_score')}/100
 """)
 

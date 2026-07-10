@@ -4,6 +4,7 @@
 import os
 import re
 import math
+import logging
 import joblib
 import numpy as np
 import pandas as pd
@@ -17,6 +18,11 @@ from sklearn.impute           import SimpleImputer
 from sklearn.pipeline         import Pipeline
 from sklearn.model_selection  import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.metrics          import accuracy_score, classification_report, f1_score
+
+# ─── Logging ────────────────────────────────────────────────────────────────────
+# Uses the root logging config set up in app.py (logging.basicConfig). If this
+# module is ever imported standalone, it still logs to the console at INFO level.
+logger = logging.getLogger("cyberlens.url_model")
 
 # ─── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +51,10 @@ _SUSPICIOUS_WORDS = [
 
 _DEFAULT_TLD_PRIOR = 0.5
 
+# IPv4: 1-3 digit octets x4. IPv6: bracketed "[...]" (URL form) or bare hex-colon form.
+_IPV4_RE = re.compile(r'^\d{1,3}(\.\d{1,3}){3}$')
+_IPV6_RE = re.compile(r'^\[?[0-9a-fA-F:]+:[0-9a-fA-F:]*\]?$')
+
 def _shannon_entropy(s: str) -> float:
     if not s:
         return 0.0
@@ -52,18 +62,38 @@ def _shannon_entropy(s: str) -> float:
     length = len(s)
     return round(-sum((c / length) * math.log2(c / length) for c in counts.values()), 4)
 
+def _is_ip_address(domain: str) -> bool:
+    """True for IPv4 (e.g. 192.168.0.1) or IPv6 (e.g. [::1], 2001:db8::1) host strings."""
+    if not domain:
+        return False
+    d = domain.strip('[]')
+    if _IPV4_RE.match(d):
+        return True
+    # IPv6 needs at least two colons and only hex/colon characters
+    if d.count(':') >= 2 and _IPV6_RE.match(domain):
+        return True
+    return False
+
 def _extract_domain_and_tld(u: str):
     try:
         parsed = urlparse(u)
-    except Exception:
+    except Exception as e:
+        logger.warning("[url_model] Failed to urlparse '%s': %s", u, e)
         parsed = None
 
     domain = (parsed.netloc if parsed else '').lower()
     domain = domain.split('@')[-1]
-    domain = domain.split(':')[0]
+
+    # Strip a trailing :port, but don't break bracketed IPv6 hosts like [::1]:443
+    if domain.startswith('['):
+        host_end = domain.find(']')
+        domain = domain[:host_end + 1] if host_end != -1 else domain
+    else:
+        domain = domain.split(':')[0]
+
     domain_no_www = domain[4:] if domain.startswith('www.') else domain
 
-    tld_match = re.search(r'\.([a-z0-9]{2,})$', domain_no_www)
+    tld_match = re.search(r'\.([a-z0-9]{2,})$', domain_no_www) if not _is_ip_address(domain_no_www) else None
     tld = tld_match.group(1) if tld_match else ''
 
     return parsed, domain_no_www, tld
@@ -78,7 +108,7 @@ def extract_url_only_features(url: str) -> dict:
     query = (parsed.query if parsed else '') or ''
     scheme = (parsed.scheme if parsed else 'http')
 
-    is_ip = 1 if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', domain) else 0
+    is_ip = 1 if _is_ip_address(domain) else 0
 
     num_subdirs = len([p for p in path.split('/') if p])
     num_params = (len(query.split('&')) if query else 0)
@@ -111,6 +141,7 @@ def extract_features_for_url(url: str) -> dict:
     try:
         return extract_url_only_features(url)
     except Exception as e:
+        logger.warning("[url_model] Feature extraction failed for '%s': %s", url, e, exc_info=True)
         return {
             'url_length': 0, 'num_dots': 0, 'has_https': 0, 'has_ip': 0,
             'num_subdirs': 0, 'num_params': 0, 'suspicious_words': 0,
@@ -155,6 +186,7 @@ def build_tld_risk_map(df: pd.DataFrame, y: pd.Series) -> tuple:
     return grouped.to_dict(), tld_prior
 
 def train_url_model(data_path: str = DATA_PATH) -> dict:
+    logger.info("[url_model] Training URL phishing model from %s", data_path)
     df = pd.read_csv(data_path)
 
     if 'label' not in df.columns:
@@ -221,6 +253,11 @@ def train_url_model(data_path: str = DATA_PATH) -> dict:
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     cv_scores = cross_val_score(pipeline, X, y, cv=cv, scoring='f1', n_jobs=-1)
 
+    logger.info(
+        "[url_model] Training complete — accuracy=%.4f threshold=%.2f cv_f1_mean=%.4f cv_f1_std=%.4f",
+        acc, best_thresh, float(cv_scores.mean()), float(cv_scores.std()),
+    )
+
     artifact = {
         'pipeline':        pipeline,
         'threshold':       best_thresh,
@@ -229,6 +266,7 @@ def train_url_model(data_path: str = DATA_PATH) -> dict:
         'tld_prior':       tld_prior,
     }
     joblib.dump(artifact, MODEL_PATH)
+    logger.info("[url_model] Saved trained artifact to %s", MODEL_PATH)
 
     return {
         'accuracy':   acc,
@@ -261,9 +299,13 @@ def load_url_artifact():
             if artifact['feature_columns'] != FEATURE_COLUMNS:
                 raise ValueError('Stale model artifact — retraining')
 
+            logger.info("[url_model] Loaded existing artifact from %s", MODEL_PATH)
             return artifact
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                "[url_model] Failed to load artifact at %s (%s) — will attempt to retrain",
+                MODEL_PATH, e, exc_info=True,
+            )
 
     if os.path.exists(DATA_PATH):
         try:
@@ -275,12 +317,31 @@ def load_url_artifact():
                 'tld_risk_map':    result['tld_risk_map'],
                 'tld_prior':       result['tld_prior'],
             }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("[url_model] Retraining failed: %s", e, exc_info=True)
 
+    logger.warning("[url_model] No artifact and no training data found at %s — URL ML predictions disabled", DATA_PATH)
     return None
 
 def predict_url(url: str, fetch_webpage: bool = False) -> dict:
+    """
+    Predict whether a URL is phishing based on lexical/structural URL features.
+
+    Note on `fetch_webpage`: this model intentionally does NOT fetch the live
+    webpage itself. Live content fetching (HTML retrieval, JS rendering,
+    scam-phrase scanning, text-model scoring) is handled upstream by
+    analyzer.analyse_webpage_content(), which is reused by analyse_url_full()
+    to avoid issuing a second, redundant HTTP request per scan. If you pass
+    fetch_webpage=True, this is logged and reflected in 'fetch_note', but the
+    returned 'fetched' flag stays False since no fetch happens *in this model*.
+    """
+    if fetch_webpage:
+        logger.info(
+            "[url_model] fetch_webpage=True requested for '%s' — no-op here by design; "
+            "webpage fetching/content scoring is done upstream in analyzer.analyse_webpage_content().",
+            url,
+        )
+
     artifact = load_url_artifact()
 
     if artifact is None:
@@ -290,6 +351,7 @@ def predict_url(url: str, fetch_webpage: bool = False) -> dict:
             'confidence':  0.0,
             'fetched':     False,
             'fetch_error': None,
+            'fetch_note':  'Webpage fetching is handled upstream in analyzer.py, not in url_model.' if fetch_webpage else None,
             'features':    {},
         }
 
@@ -301,12 +363,14 @@ def predict_url(url: str, fetch_webpage: bool = False) -> dict:
     try:
         feat_dict = extract_features_for_url(url)
     except Exception as e:
+        logger.warning("[url_model] extract_features_for_url raised for '%s': %s", url, e, exc_info=True)
         return {
             'label':       'unknown',
             'probability': 0.0,
             'confidence':  0.0,
             'fetched':     False,
             'fetch_error': str(e),
+            'fetch_note':  'Webpage fetching is handled upstream in analyzer.py, not in url_model.' if fetch_webpage else None,
             'features':    {},
         }
 
@@ -317,12 +381,14 @@ def predict_url(url: str, fetch_webpage: bool = False) -> dict:
         proba   = pipeline.predict_proba(X_row)[0]
         ml_prob = float(proba[1])
     except Exception as e:
+        logger.error("[url_model] predict_proba failed for '%s': %s", url, e, exc_info=True)
         return {
             'label':       'unknown',
             'probability': 0.0,
             'confidence':  0.0,
             'fetched':     False,
             'fetch_error': str(e),
+            'fetch_note':  'Webpage fetching is handled upstream in analyzer.py, not in url_model.' if fetch_webpage else None,
             'features':    feat_dict,
         }
 
@@ -332,18 +398,74 @@ def predict_url(url: str, fetch_webpage: bool = False) -> dict:
     display_features = {k: v for k, v in feat_dict.items() if not k.startswith('_')}
     display_features['tld'] = feat_dict.get('_tld', '')
 
+    logger.info(
+        "[url_model] Prediction for '%s': label=%s probability=%.4f confidence=%.4f",
+        url, label, ml_prob, confidence,
+    )
+
     return {
         'label':       label,
         'probability': round(ml_prob, 4),
         'confidence':  confidence,
         'fetched':     False,
         'fetch_error': None,
+        'fetch_note':  'Webpage fetching is handled upstream in analyzer.py, not in url_model.' if fetch_webpage else None,
         'features':    display_features,
     }
+
+def get_feature_importance_url(url: str, top_n: int = 5) -> list:
+    """
+    Return the top contributing FEATURE_COLUMNS for a given URL's prediction,
+    ranked by (model feature importance x this URL's normalised feature value).
+    Mirrors ml_model.get_feature_importance() so app.py can show *why* a URL
+    was flagged, not just the final score.
+
+    Returns a list of (feature_name, contribution_score) tuples, e.g.:
+        [('suspicious_words', 0.41), ('entropy', 0.22), ...]
+    """
+    artifact = load_url_artifact()
+    if artifact is None:
+        return []
+
+    pipeline     = artifact['pipeline']
+    tld_risk_map = artifact.get('tld_risk_map', {})
+    tld_prior    = artifact.get('tld_prior', _DEFAULT_TLD_PRIOR)
+
+    try:
+        feat_dict = extract_features_for_url(url)
+        vector    = _row_to_feature_vector(feat_dict, tld_risk_map, tld_prior)
+
+        # Average feature_importances_ across the RF + GB ensemble members.
+        clf = pipeline.named_steps['clf']
+        importances = np.mean(
+            [est.feature_importances_ for _, est in clf.estimators_ if hasattr(est, 'feature_importances_')]
+            or [np.zeros(len(FEATURE_COLUMNS))],
+            axis=0,
+        )
+
+        # Normalise this URL's raw feature values to 0-1 so a large url_length
+        # doesn't dominate purely due to scale, then weight by model importance.
+        raw_vals = np.array(vector, dtype=float)
+        max_vals = np.maximum(raw_vals.max(), 1e-9)
+        norm_vals = raw_vals / max_vals
+
+        contributions = importances * norm_vals
+        pairs = sorted(
+            zip(FEATURE_COLUMNS, contributions),
+            key=lambda p: p[1], reverse=True,
+        )
+        return [(name, round(float(score), 4)) for name, score in pairs[:top_n] if score > 0]
+    except Exception as e:
+        logger.warning("[url_model] get_feature_importance_url failed for '%s': %s", url, e, exc_info=True)
+        return []
+
+def batch_predict_url(urls: list) -> list:
+    """Run predict_url() over a list of URLs."""
+    return [predict_url(u) for u in urls]
 
 if not os.path.exists(MODEL_PATH):
     try:
         if os.path.exists(DATA_PATH):
             train_url_model()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("[url_model] Could not pre-train URL model on startup: %s", e, exc_info=True)

@@ -2,6 +2,7 @@
 # High-level analysis wrappers used by app.py
 
 import io
+import logging
 import os
 import re
 import time
@@ -14,6 +15,12 @@ from bs4 import BeautifulSoup
 # Disable insecure request warning for verify=False on dodgy domains
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# ─── Logging ────────────────────────────────────────────────────────────────────
+# Uses the root logging config set up in app.py (logging.basicConfig). If this
+# module is ever imported standalone (e.g. in a test script), it still logs to
+# the console at INFO level by default.
+logger = logging.getLogger("cyberlens.analyzer")
+
 _WIN_TESS = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 if os.name == 'nt':
     pytesseract.pytesseract.tesseract_cmd = _WIN_TESS
@@ -24,7 +31,7 @@ from utils import (
     SCAM_KEYWORDS, SHORTENER_DOMAINS
 )
 from ml_model import predict as ml_predict, get_feature_importance
-from url_model import predict_url as url_ml_predict
+from url_model import predict_url as url_ml_predict, get_feature_importance_url
 from language_utils import detect_and_translate
 
 _RECS = {
@@ -198,10 +205,14 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
         'url_used':           url,
         'suspicious_phrases': [],
         'content_snippet':    '',
+        'extracted_text':     '',
         'error':              None,
         'text_model_label':       None,
         'text_model_probability': 0.0,
         'extracted_text_len':     0,
+        'keyword_score_raw':          0.0,
+        'keyword_score_normalised':   0.0,
+        'keyword_hits':               [],
         'debug_logs': {
             'http_status': None,
             'response_size': 0,
@@ -212,6 +223,9 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
             'reached_text_model': False,
             'text_ml_prob': 0.0,
             'rule_score': 0.0,
+            'keyword_score_raw': 0.0,
+            'keyword_score_normalised': 0.0,
+            'keyword_hits': [],
             'final_hybrid_score': 0.0,
         }
     }
@@ -220,6 +234,8 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
     if not fetch_url.startswith(('http://', 'https://')):
         fetch_url = 'http://' + fetch_url
     result['url_used'] = fetch_url
+
+    logger.info("[URL Scanner] Step 1/5 — starting fetch for %s", fetch_url)
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -240,6 +256,10 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
         result['debug_logs']['http_status'] = status_code
         result['debug_logs']['response_size'] = len(resp.content)
         result['debug_logs']['html_size'] = len(resp.text)
+        logger.info(
+            "[URL Scanner] Fetch complete — status=%s response_bytes=%s html_bytes=%s",
+            status_code, len(resp.content), len(resp.text),
+        )
 
         is_cloudflare = False
         server_header = resp.headers.get('Server', '').lower()
@@ -251,25 +271,33 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
                 result['error'] = "Access blocked by Cloudflare bot protection (HTTP 403)."
             else:
                 result['error'] = "Access denied by website server (HTTP 403 Forbidden)."
+            logger.warning("[URL Scanner] %s (%s)", result['error'], fetch_url)
         elif status_code == 404:
             result['error'] = "The website was not found (HTTP 404 Not Found)."
+            logger.warning("[URL Scanner] %s (%s)", result['error'], fetch_url)
         elif status_code >= 500:
             result['error'] = f"The website server returned an error (HTTP {status_code})."
+            logger.warning("[URL Scanner] %s (%s)", result['error'], fetch_url)
         else:
             resp.raise_for_status()
             html_content = resp.text
 
     except requests.exceptions.Timeout:
         result['error'] = "The website took too long to respond (timeout)."
+        logger.warning("[URL Scanner] Timeout fetching %s", fetch_url, exc_info=True)
     except requests.exceptions.SSLError:
         result['error'] = "Could not verify the site's SSL certificate."
+        logger.warning("[URL Scanner] SSL error fetching %s", fetch_url, exc_info=True)
     except requests.exceptions.ConnectionError:
         result['error'] = "Could not connect to the website — it may be down, blocking requests, or connection refused."
+        logger.warning("[URL Scanner] Connection error fetching %s", fetch_url, exc_info=True)
     except requests.exceptions.HTTPError:
         status = resp.status_code if 'resp' in locals() else '?'
         result['error'] = f"The website returned an error (HTTP {status})."
+        logger.warning("[URL Scanner] HTTPError (status=%s) fetching %s", status, fetch_url, exc_info=True)
     except Exception as e:
         result['error'] = f"Unable to fetch this website: {str(e)}"
+        logger.error("[URL Scanner] Unexpected error fetching %s: %s", fetch_url, e, exc_info=True)
 
     visible_text = ""
     if html_content:
@@ -307,6 +335,10 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
 
         visible_text = ' '.join(extracted_pieces)
         visible_text = re.sub(r'\s+', ' ', visible_text).strip()
+        logger.info(
+            "[URL Scanner] Step 2/5 — static extraction: %d chars of visible text (method=%s)",
+            len(visible_text), extraction_method,
+        )
 
         # JS Detection and rendering trigger
         text_len = len(visible_text)
@@ -319,8 +351,14 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
                 js_required = True
 
         if js_required or result['error']:
+            logger.info(
+                "[URL Scanner] JS rendering triggered (js_required=%s, prior_error=%s) — invoking Playwright",
+                js_required, result['error'],
+            )
             try:
                 pw_html, pw_status, pw_err = fetch_via_playwright(fetch_url, timeout_ms=8000)
+                if pw_err:
+                    logger.warning("[URL Scanner] Playwright reported an error for %s: %s", fetch_url, pw_err)
                 if pw_html:
                     html_content = pw_html
                     status_code = pw_status or 200
@@ -362,10 +400,20 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
 
                     visible_text = ' '.join(extracted_pieces)
                     visible_text = re.sub(r'\s+', ' ', visible_text).strip()
+                    logger.info(
+                        "[URL Scanner] Playwright re-extraction complete: %d chars of visible text",
+                        len(visible_text),
+                    )
             except ImportError:
+                logger.warning(
+                    "[URL Scanner] Playwright is not installed — cannot render JS for %s", fetch_url
+                )
                 if js_required:
                     result['error'] = "This webpage requires JavaScript rendering. Static HTML contained insufficient content for analysis."
             except Exception as e:
+                logger.error(
+                    "[URL Scanner] Playwright rendering failed for %s: %s", fetch_url, e, exc_info=True
+                )
                 if js_required:
                     result['error'] = f"This webpage requires JavaScript rendering, but browser automation failed: {str(e)}"
 
@@ -376,8 +424,43 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
         result['fetched']            = True
         result['suspicious_phrases'] = found
         result['content_snippet']    = visible_text[:500]
+        # Fuller copy of the extracted text so the results page can show what
+        # was actually scraped from the page (capped to keep the UI/response light).
+        result['extracted_text']     = visible_text[:5000]
         result['extracted_text_len'] = len(visible_text)
 
+        logger.info(
+            "[URL Scanner] Step 3/5 — %d scam phrase(s) matched against curated phrase list: %s",
+            len(found), found[:5],
+        )
+
+        # ── Step 4/5: keyword-based scoring, using the SAME score_keywords()
+        # function the text scanner (analyse_text) uses, so URL page content
+        # and pasted text are scored with identical keyword logic. ──────────
+        try:
+            kw_result = score_keywords(visible_text)
+            kw_raw    = kw_result['score']
+            kw_norm   = normalise_score(kw_raw, ceiling=20.0)
+
+            result['keyword_score_raw']        = kw_raw
+            result['keyword_score_normalised'] = kw_norm
+            result['keyword_hits']             = kw_result['found']
+
+            result['debug_logs']['keyword_score_raw']        = kw_raw
+            result['debug_logs']['keyword_score_normalised'] = kw_norm
+            result['debug_logs']['keyword_hits']              = kw_result['found']
+
+            logger.info(
+                "[URL Scanner] score_keywords() on page text — raw=%s normalised=%s hits=%s",
+                kw_raw, kw_norm, kw_result['found'][:8],
+            )
+        except Exception as e:
+            logger.error(
+                "[URL Scanner] score_keywords() failed on extracted page text for %s: %s",
+                fetch_url, e, exc_info=True,
+            )
+
+        # ── Step 5/5: run the extracted text through the text-scam ML model ──
         reached_text_model = False
         text_ml_prob = 0.0
         text_model_label = None
@@ -388,15 +471,33 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
             result['text_model_label']       = text_model_label
             result['text_model_probability'] = text_ml_prob
             reached_text_model = True
-        except Exception:
-            pass
+            logger.info(
+                "[URL Scanner] Text ML model scored page content — label=%s probability=%s",
+                text_model_label, text_ml_prob,
+            )
+        except Exception as e:
+            logger.error(
+                "[URL Scanner] Text ML model failed on extracted page text for %s: %s",
+                fetch_url, e, exc_info=True,
+            )
 
         result['debug_logs']['reached_text_model'] = reached_text_model
         result['debug_logs']['text_ml_prob'] = text_ml_prob
-        
-        # Calculate text rules core
-        from ml_model import rule_based_scam_score
-        result['debug_logs']['rule_score'] = rule_based_scam_score(visible_text)
+
+        # Legacy heuristic rule score — kept alongside score_keywords() for
+        # backward-compatible debug output (see 'rule_score' in the debug panel).
+        try:
+            from ml_model import rule_based_scam_score
+            result['debug_logs']['rule_score'] = rule_based_scam_score(visible_text)
+        except Exception as e:
+            logger.warning(
+                "[URL Scanner] rule_based_scam_score() failed for %s: %s", fetch_url, e, exc_info=True
+            )
+    else:
+        logger.info(
+            "[URL Scanner] Not enough visible text extracted (%d chars) — skipping keyword/ML content scoring",
+            len(visible_text.strip()) if visible_text else 0,
+        )
 
     result['debug_logs']['extracted_text_len'] = len(visible_text)
     result['debug_logs']['extraction_method'] = extraction_method if visible_text else "Failed"
@@ -409,9 +510,12 @@ def analyse_url_full(url: str) -> dict:
     if not url or not url.strip():
         return {'error': 'No URL provided'}
 
+    logger.info("[URL Scanner] ==== New scan requested for: %s ====", url)
+
     base = analyse_url(url)
     rs   = base['risk_score']
     ri   = base['risk_level']
+    logger.info("[URL Scanner] URL heuristic score (analyse_url): %s (%s)", rs, ri)
 
     indicators = []
     if not base['is_https']:        indicators.append('No HTTPS encryption')
@@ -457,6 +561,20 @@ def analyse_url_full(url: str) -> dict:
     url_ml_result = url_ml_predict(url)
     ml_prob       = url_ml_result.get('probability', 0.0)
     ml_fetched    = url_ml_result.get('fetched', False)
+    ml_fetch_note = url_ml_result.get('fetch_note')
+
+    try:
+        url_ml_top_signals_raw = get_feature_importance_url(url, top_n=5)
+        url_ml_top_signals = [name for name, _score in url_ml_top_signals_raw]
+        logger.info(
+            "[URL Scanner] get_feature_importance_url() top signals for %s: %s",
+            url, url_ml_top_signals_raw,
+        )
+    except Exception as e:
+        logger.warning(
+            "[URL Scanner] get_feature_importance_url() failed for %s: %s", url, e, exc_info=True
+        )
+        url_ml_top_signals = []
 
     if url_ml_result.get('label') != 'unknown':
         if url_ml_result['label'] == 'phishing':
@@ -549,6 +667,17 @@ def analyse_url_full(url: str) -> dict:
     debug_logs['final_hybrid_score'] = final_score
     debug_logs['url_ml_prob'] = ml_prob
     debug_logs['url_heuristic_score'] = rs
+    debug_logs['url_ml_top_signals'] = url_ml_top_signals
+    debug_logs['url_ml_fetch_note'] = ml_fetch_note
+
+    logger.info(
+        "[URL Scanner] ==== Scan complete for %s — final_score=%s level=%s "
+        "url_ml=%s(%.4f) text_ml=%s(%.4f) fetch_note=%s ====",
+        url, final_score, final_ri['level'],
+        url_ml_result.get('label', 'unknown'), ml_prob,
+        content_result.get('text_model_label'), text_ml_prob,
+        ml_fetch_note,
+    )
 
     return {
         **base,
@@ -568,6 +697,8 @@ def analyse_url_full(url: str) -> dict:
         'url_ml_probability':round(ml_prob * 100, 1),
         'url_ml_fetched':    ml_fetched,
         'url_ml_fetch_error':url_ml_result.get('fetch_error'),
+        'url_ml_top_signals':url_ml_top_signals,
+        'fetch_note':        ml_fetch_note,
         'text_model_label':       content_result.get('text_model_label'),
         'text_model_probability': round(text_ml_prob * 100, 1),
         'debug_logs':      debug_logs,
