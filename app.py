@@ -2,7 +2,7 @@
 # AI-powered cybersecurity intelligence dashboard
 # Run: streamlit run app.py
 
-import os, time, datetime, json
+import os, time, datetime, json, html as _html
 import streamlit as st
 import plotly.graph_objects as go
 from streamlit_local_storage import LocalStorage
@@ -581,6 +581,60 @@ def render_full_result(result: dict) -> None:
     else:
         url_details_html = ""
 
+    # ── Website Content Analysis (live fetch + text ML) ─────────────────────────
+    # Uses the real fetch performed in analyzer.analyse_webpage_content() /
+    # analyse_url_full() — content_analysis holds the fetched page data.
+    _content       = result.get("content_analysis", {}) or {}
+    _dbg           = result.get("debug_logs", {}) or {}
+    _site_opened   = bool(_content.get("fetched"))
+    _access_color  = "#00ff9d" if _site_opened else "#ff3366"
+    _access_icon   = "✅" if _site_opened else "❌"
+    _access_text   = "Opened successfully" if _site_opened else "Failed to open"
+
+    _raw_text      = (_content.get("extracted_text") or "").strip()
+    _kw_score      = _content.get("keyword_score_normalised", _content.get("keyword_score_raw", 0))
+    _text_ml_label = result.get("text_model_label") or "N/A"
+    _text_ml_prob  = result.get("text_model_probability", 0)
+    _final_combined= _dbg.get("final_hybrid_score", score)
+
+    if _raw_text:
+        _preview_len   = 300
+        _text_escaped  = _html.escape(_raw_text)
+        _preview_html  = _html.escape(_raw_text[:_preview_len])
+        _remainder_html= _html.escape(_raw_text[_preview_len:])
+        if len(_raw_text) > _preview_len:
+            _text_block = (
+                f'{_preview_html}…'
+                f'<details style="display:inline">'
+                f'<summary style="cursor:pointer;color:#00d4ff;font-family:monospace;'
+                f'font-size:.72rem;display:inline;margin-left:.4rem">Show More</summary>'
+                f'<span>{_remainder_html}</span></details>'
+            )
+        else:
+            _text_block = _text_escaped
+    else:
+        _text_block = '<span style="color:#5a7a9a">No text could be extracted from this page.</span>'
+
+    content_analysis_html = f'''
+  <div class="divider"></div>
+  <div class="section-hdr">🌐 Website Content Analysis</div>
+  <div class="data-row"><span class="dr-icon">{_access_icon}</span>
+    <span class="dr-label">Website Access</span>
+    <span class="dr-val" style="color:{_access_color};font-weight:700">{_access_text}</span></div>
+  <div class="data-row" style="flex-direction:column;align-items:flex-start">
+    <span class="dr-label" style="margin-bottom:.4rem">Extracted Website Text</span>
+    <div style="color:#c8d8e8;font-size:.82rem;line-height:1.65">{_text_block}</div>
+  </div>
+  <div class="data-row"><span class="dr-icon">🔑</span>
+    <span class="dr-label">Text Keyword Score</span>
+    <span class="dr-val">{_kw_score}</span></div>
+  <div class="data-row"><span class="dr-icon">🧠</span>
+    <span class="dr-label">Text ML Result</span>
+    <span class="dr-val" style="text-transform:capitalize">{_text_ml_label} ({_text_ml_prob}%)</span></div>
+  <div class="data-row"><span class="dr-icon">📊</span>
+    <span class="dr-label">Final Combined Score</span>
+    <span class="dr-val" style="color:{color};font-weight:700">{round(_final_combined)}/100</span></div>
+'''
 
     # ── SVG ring math ────────────────────────────────────────────────────────────
     radius = 52
@@ -595,7 +649,8 @@ def render_full_result(result: dict) -> None:
     _kw_rows  = max(1, len(kws) // 4)
     _rec_rows = len(recs)
     _url_rows = len(url_detail_items) if url_detail_items else 0
-    _height   = 700 + (_kw_rows * 40) + (_rec_rows * 65) + (_url_rows * 48) + (_ai_rows_count * 48)
+    _text_extra = min(240, len(_raw_text) // 4) if _raw_text else 40
+    _height   = 700 + (_kw_rows * 40) + (_rec_rows * 65) + (_url_rows * 48) + (_ai_rows_count * 48) + 260 + _text_extra
 
     import streamlit.components.v1 as components
     components.html(f"""
@@ -741,6 +796,8 @@ def render_full_result(result: dict) -> None:
   <div style="line-height:2.4;margin-top:.25rem">{kw_chips_html}</div>
 
   {url_details_html}
+
+  {content_analysis_html}
 
   <div class="divider"></div>
 
@@ -1478,128 +1535,11 @@ elif selected == "URL Scanner":
         print(f"Final Combined Score: {_logs.get('final_hybrid_score')}/100")
         print("="*50 + "\n")
 
-        # ── ADVANCED INTERACTIVE DEVELOPER METRICS EXPANDER ──────────────────────
-        with st.expander("🛠️ Advanced Debugging Logs", expanded=False):
-            st.code(f"""[CyberLens AI Debugger]
-URL Analyzed:              {url_val}
-HTTP Status Code:          {_logs.get('http_status') or 'N/A'}
-Response Raw Size:         {_logs.get('response_size')} bytes
-HTML Text Size:            {_logs.get('html_size')} bytes
-Extracted Text Length:     {_logs.get('extracted_text_len')} chars
-Extraction Method Used:    {_logs.get('extraction_method')}
-JS Rendering Used:         {_logs.get('js_rendering_used')}
-Reached Scam Text Model:   {_logs.get('reached_text_model')}
-Text Model Probability:    {_logs.get('text_ml_prob')}
-Text Heuristics Rule Score: {_logs.get('rule_score')}
-URL Heuristics Score:      {_logs.get('url_heuristic_score')}
-URL Model Probability:     {_logs.get('url_ml_prob')}%
-URL Model Top Signals:     {_logs.get('url_ml_top_signals')}
-URL Model Fetch Note:      {_logs.get('url_ml_fetch_note')}
-Final Hybrid Score:        {_logs.get('final_hybrid_score')}/100
-""")
-
-        _url_result   = st.session_state.result_url
-        _level        = _url_result.get("risk_level", "SAFE")
-        _is_safe_site = _level in ("SAFE", "LOW")
-        _content      = _url_result.get("content_analysis", {})
-        _scam_phrases = _content.get("suspicious_phrases", [])
-        _open_url     = _url_result.get("open_url", url_val.strip())
-
-        st.write("")
-        H('<div class="cyber-divider"></div>')
-
-        # ── Suspicious Content Found ────────────────
-        section_header("Suspicious Content Found", "🕵️")
-        if _content.get("error"):
-            H(f'<div class="alert-warning">⚠️ Could not analyse page content — {_content["error"]}</div>')
-        elif _scam_phrases:
-            _phrase_chips = "".join(f'<span class="kw-chip">{p}</span>' for p in _scam_phrases[:12])
-            H(f'<div style="line-height:2.4">{_phrase_chips}</div>')
-            H(f'<div style="font-size:0.78rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:2px">'
-              f'{len(_scam_phrases)} scam/phishing phrase(s) found in the page text.</div>')
-        elif _content.get("fetched"):
-            H('<div style="color:var(--text-dim);font-size:0.82rem;font-family:var(--font-mono)">'
-              'No obvious scam phrases detected in the visible page text.</div>')
-        else:
-            H('<div style="color:var(--text-dim);font-size:0.82rem;font-family:var(--font-mono)">'
-              'Page content was not analysed.</div>')
-
-        st.write("")
-        H('<div class="cyber-divider"></div>')
-
-        # ── Open Website (safe) vs Access Blocked (unsafe) ───────────────────
-        if _is_safe_site:
-            section_header("Website Access", "🔓")
-            H(f'''
-            <a href="{_open_url}" target="_blank" rel="noopener noreferrer"
-               style="display:inline-block;text-decoration:none;
-                      background:linear-gradient(135deg,rgba(0,212,255,0.12),rgba(124,58,237,0.12));
-                      border:1px solid rgba(0,212,255,0.4);border-radius:12px;color:var(--primary);
-                      font-family:var(--font-display);font-size:0.75rem;font-weight:700;
-                      letter-spacing:0.14em;padding:0.9rem 2rem;text-transform:uppercase;
-                      box-shadow:0 0 20px rgba(0,212,255,0.08);">
-                🌐 Open Website
-            </a>''')
-        else:
-            section_header("Website Access", "🔒")
-            H('''
-            <div class="alert-error" style="text-align:center;padding:1.5rem;border-radius:14px">
-                <div style="font-size:1.6rem;margin-bottom:0.4rem">🚫 Dangerous Website Detected</div>
-                <div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-dim)">
-                    Access Blocked for Your Safety
-                </div>
-            </div>''')
-            H('''
-            <div style="opacity:0.4;pointer-events:none;margin-top:0.85rem;display:inline-block">
-                <span style="display:inline-block;background:rgba(255,255,255,0.03);
-                            border:1px solid rgba(255,255,255,0.08);border-radius:12px;color:var(--text-dim);
-                            font-family:var(--font-display);font-size:0.75rem;font-weight:700;
-                            letter-spacing:0.14em;padding:0.9rem 2rem;text-transform:uppercase">
-                    🌐 Open Website (Blocked)
-                </span>
-            </div>''')
-
-            st.write("")
-            section_header("Safety Tips", "🛡️")
-            _tips = [
-                "🔒 Never enter passwords, OTPs, or bank details on this site.",
-                "🔎 Verify the sender or link through an official channel before trusting it.",
-                "🚫 Do not download or install anything offered by this website.",
-                "📵 Avoid clicking any 'urgent' or 'limited-time' buttons on the page.",
-                "📢 Report the link to cybercrime.gov.in or your local cyber cell.",
-            ]
-            for i, tip in enumerate(_tips):
-                H(f'<div class="rec-item" style="animation-delay:{i*0.07}s">{tip}</div>')
-
-        st.write("")
-        _report_lines = [
-            "CYBERLENS AI — URL SCAN REPORT",
-            "=" * 42,
-            f"Scanned URL     : {_url_result.get('url', url_val.strip())}",
-            f"Risk Level      : {_level}",
-            f"Risk Score      : {round(_url_result.get('risk_score', 0))}/100",
-            f"Verdict         : {_url_result.get('verdict', '-')}",
-            "",
-            "Indicators:",
-        ] + [f" - {i}" for i in _url_result.get("indicators", [])] + [
-            "",
-            "Suspicious Content Found (webpage text):",
-        ] + ([f" - {p}" for p in _scam_phrases] if _scam_phrases else [
-            " - None detected" if not _content.get("error") else f" - Not analysed ({_content['error']})"
-        ]) + [
-            "",
-            "Recommendations:",
-        ] + [f" - {r}" for r in _url_result.get("recommendations", [])]
-        _report_txt = "\n".join(_report_lines)
-
-        st.download_button(
-            "📄 Download Scan Report",
-            data      =_report_txt,
-            file_name ="cyberlens_url_scan_report.txt",
-            mime      ="text/plain",
-            use_container_width=True,
-            key       ="url_report_dl",
-        )
+        # NOTE: Website Access, Extracted Website Text, Text Keyword Score,
+        # Text ML Result, and Final Combined Score are now rendered directly
+        # inside the main result card by render_full_result() (see the
+        # "Website Content Analysis" section, next to the AI URL Model /
+        # Recommendations blocks) — no separate sections needed here.
 
 # ══════════════════════════════════════════════════════════════════
 # PAGE: QR SCANNER
