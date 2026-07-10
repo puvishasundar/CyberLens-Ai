@@ -498,60 +498,15 @@ def render_full_result(result: dict) -> None:
         if key in result
     }
 
-    # AI URL model verdict — label, confidence, fetch status, and top signals
-    # (computed in analyzer.analyse_url_full() via url_model.predict_url() /
-    # get_feature_importance_url(), Stage 2).
-    _url_ml_label   = result.get("url_ml_label")
-    _url_ml_prob    = result.get("url_ml_probability")
-    _url_ml_fetched = result.get("url_ml_fetched")
-    _url_ml_error   = result.get("url_ml_fetch_error")
-    _fetch_note     = result.get("fetch_note")
-    _url_ml_signals = result.get("url_ml_top_signals") or []
-
-    _has_ai_panel = _url_ml_label is not None and _url_ml_label != "unknown"
+    # NOTE: The AI URL model still runs fully in the backend (see
+    # analyzer.analyse_url_full() / url_model.predict_url() /
+    # get_feature_importance_url(), Stage 2) and its outputs (url_ml_label,
+    # url_ml_probability, url_ml_fetched, url_ml_fetch_error, fetch_note,
+    # url_ml_top_signals) remain in `result` and feed the risk score below.
+    # They are intentionally not rendered in the UI anymore.
     _ai_rows_count = 0
 
-    if _has_ai_panel:
-        _label_color = "#ff3366" if _url_ml_label == "phishing" else "#00ff9d"
-        ai_rows = (
-            f'<div class="data-row"><span class="dr-icon">🤖</span>'
-            f'<span class="dr-label">AI Model Verdict</span>'
-            f'<span class="dr-val" style="color:{_label_color};font-weight:700;text-transform:uppercase">{_url_ml_label}</span></div>'
-            f'<div class="data-row"><span class="dr-icon">📈</span>'
-            f'<span class="dr-label">AI Confidence</span>'
-            f'<span class="dr-val">{_url_ml_prob}%</span></div>'
-            f'<div class="data-row"><span class="dr-icon">📡</span>'
-            f'<span class="dr-label">Live Fetch Used</span>'
-            f'<span class="dr-val">{"Yes" if _url_ml_fetched else "No (fallback to static features)"}</span></div>'
-        )
-        _ai_rows_count = 3
-        if _fetch_note:
-            ai_rows += (
-                f'<div class="data-row"><span class="dr-icon">📝</span>'
-                f'<span class="dr-label">Fetch Note</span>'
-                f'<span class="dr-val" style="color:#5a7a9a">{_fetch_note}</span></div>'
-            )
-            _ai_rows_count += 1
-        if _url_ml_error:
-            ai_rows += (
-                f'<div class="data-row"><span class="dr-icon">⚠️</span>'
-                f'<span class="dr-label">Fetch Error</span>'
-                f'<span class="dr-val" style="color:#f97316">{_url_ml_error}</span></div>'
-            )
-            _ai_rows_count += 1
-
-        if _url_ml_signals:
-            _signal_chips = "".join(f'<span class="kw-chip">{sig}</span>' for sig in _url_ml_signals[:8])
-            ai_rows += (
-                f'<div style="margin-top:0.6rem;line-height:2.4">'
-                f'<span class="dr-label" style="display:block;margin-bottom:0.3rem">Top Contributing Signals</span>'
-                f'{_signal_chips}</div>'
-            )
-            _ai_rows_count += 1
-    else:
-        ai_rows = ""
-
-    if url_detail_items or _has_ai_panel:
+    if url_detail_items:
         url_rows = "".join(
             f'<div class="data-row"><span class="dr-icon">{icon}</span>'
             f'<span class="dr-label">{label}</span>'
@@ -567,16 +522,10 @@ def render_full_result(result: dict) -> None:
                 f'<span class="dr-val" style="color:#f97316">{f}</span></div>'
                 for f in url_flags
             )
-        _ai_section_html = (
-            f'<div style="margin-top:0.75rem">'
-            f'<span class="dr-label" style="display:block;margin-bottom:0.3rem;color:#00d4ff;letter-spacing:.08em;text-transform:uppercase;font-size:0.65rem">🤖 AI URL Model</span>'
-            f'{ai_rows}</div>'
-        ) if _has_ai_panel else ""
         url_details_html = (
             f'<div class="cyber-divider" style="margin:1.25rem 0"></div>'
             f'<div class="section-header">🌐 URL Details</div>'
             f'<div style="margin-top:0.5rem">{url_rows}</div>'
-            f'{_ai_section_html}'
         )
     else:
         url_details_html = ""
@@ -1538,8 +1487,8 @@ elif selected == "URL Scanner":
         # NOTE: Website Access, Extracted Website Text, Text Keyword Score,
         # Text ML Result, and Final Combined Score are now rendered directly
         # inside the main result card by render_full_result() (see the
-        # "Website Content Analysis" section, next to the AI URL Model /
-        # Recommendations blocks) — no separate sections needed here.
+        # "Website Content Analysis" section, next to the Recommendations
+        # block) — no separate sections needed here.
 
 # ══════════════════════════════════════════════════════════════════
 # PAGE: QR SCANNER
