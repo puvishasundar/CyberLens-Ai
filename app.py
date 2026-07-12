@@ -771,6 +771,333 @@ def log_scan(result: dict, scan_type: str) -> None:
         _save_to_localstorage(st.session_state.stats)
 
 # ══════════════════════════════════════════════════════════════════
+# ✚ ADD-ON FEATURE: Post-Scan Threat Popup + "Open Website" Action
+# ══════════════════════════════════════════════════════════════════
+# This is a pure enhancement layered on top of the existing URL Scanner.
+# It does NOT alter analyse_url_full(), render_full_result(), risk scoring,
+# threat levels, or any other existing UI/backend behaviour. It only adds:
+#   1. A new "Open Website" action button (didn't exist before).
+#   2. An animated cyber-themed warning popup shown after a scan completes.
+# Both are rendered together as one self-contained HTML/CSS/JS block via
+# st.markdown so the popup can use position:fixed to cover the full page
+# (the same technique already used for the Matrix background canvas above).
+def render_threat_popup(result: dict, url_val: str) -> None:
+    if not result or "error" in result:
+        return
+
+    import hashlib as _hashlib
+
+    level = result.get("risk_level", "SAFE")
+    score = result.get("risk_score", 0)
+    open_target = result.get("open_url") or (url_val or "").strip()
+
+    LEVEL_CONFIG = {
+        "SAFE": dict(
+            color="#00ff9d", glow="rgba(0,255,157,.55)", icon="✅",
+            title="ACCESS GRANTED", shake="", sound="success", blocked=False,
+            lines=["✅ This website appears safe."],
+        ),
+        "LOW": dict(
+            color="#3b82f6", glow="rgba(59,130,246,.55)", icon="🔵",
+            title="LOW RISK DETECTED", shake="", sound="success", blocked=False,
+            lines=["🔵 This link looks mostly safe.",
+                   "Still verify the source before entering any details."],
+        ),
+        "MEDIUM": dict(
+            color="#ffb340", glow="rgba(255,179,64,.6)", icon="⚠️",
+            title="CAUTION ADVISED", shake="", sound="warning", blocked=True,
+            lines=["⚠️ Think before you click.",
+                   "This link contains suspicious elements."],
+        ),
+        "HIGH": dict(
+            color="#f97316", glow="rgba(249,115,22,.65)", icon="🚨",
+            title="HIGH THREAT DETECTED", shake="cl-twp-shake-soft", sound="alert", blocked=True,
+            lines=["🚨 Multiple high-risk indicators detected.",
+                   "Proceeding is strongly discouraged."],
+        ),
+        "CRITICAL": dict(
+            color="#ff3366", glow="rgba(255,51,102,.75)", icon="🛑",
+            title="DANGER — SCAM DETECTED", shake="cl-twp-shake-hard", sound="alert", blocked=True,
+            lines=["🛑 STOP! Potential scam detected.",
+                   "Don't risk your data.",
+                   "This website has been blocked for your safety."],
+        ),
+    }
+    cfg = LEVEL_CONFIG.get(level, LEVEL_CONFIG["SAFE"])
+
+    lines_html = "".join(f'<div class="cl-twp-line">{ln}</div>' for ln in cfg["lines"])
+    blocked          = cfg["blocked"]
+    btn_label        = "🔒 BLOCKED" if blocked else "🌐 Open Website"
+    btn_class        = "cl-owb-blocked" if blocked else "cl-owb-active"
+    btn_disabled_att = "disabled aria-disabled=\"true\"" if blocked else ""
+    note_html        = ('<div class="cl-owb-note">🔒 This action has been locked by '
+                         'CyberLens AI for your protection.</div>') if blocked else ""
+
+    _uid = _hashlib.md5(f"{open_target}|{level}|{score}".encode("utf-8")).hexdigest()[:10]
+    _open_target_js = json.dumps(open_target)
+    _shake_class_js = json.dumps(cfg["shake"])
+
+    H(f"""
+<style>
+/* ── Add-on: Open Website action button ─────────────────────────── */
+.cl-owb-wrap {{
+    margin-top: 1.4rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .55rem;
+}}
+.cl-owb-active, .cl-owb-blocked {{
+    font-family: var(--font-display, 'Rajdhani', sans-serif);
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    font-size: .85rem;
+    padding: .85rem 2.4rem;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: .6rem;
+    transition: all .25s ease;
+    border: 1px solid transparent;
+}}
+.cl-owb-active {{
+    cursor: pointer;
+    background: linear-gradient(135deg, rgba(0,255,157,.18), rgba(0,212,255,.18));
+    border-color: rgba(0,255,157,.45);
+    color: #00ff9d;
+    box-shadow: 0 0 24px rgba(0,255,157,.25);
+}}
+.cl-owb-active:hover {{
+    transform: translateY(-2px);
+    box-shadow: 0 0 34px rgba(0,255,157,.45);
+}}
+.cl-owb-blocked {{
+    cursor: not-allowed;
+    background: rgba(255,51,102,.08);
+    border-color: rgba(255,51,102,.45);
+    color: #ff3366;
+    opacity: .9;
+    animation: clOwbBlockedPulse 2.2s ease-in-out infinite;
+}}
+@keyframes clOwbBlockedPulse {{
+    0%,100% {{ box-shadow: 0 0 14px rgba(255,51,102,.2); }}
+    50%     {{ box-shadow: 0 0 26px rgba(255,51,102,.45); }}
+}}
+.cl-owb-note {{
+    font-family: var(--font-mono, monospace);
+    font-size: .68rem;
+    letter-spacing: .04em;
+    color: var(--text-dim, #5a7a9a);
+    text-align: center;
+}}
+
+/* ── Add-on: Threat popup overlay ────────────────────────────────── */
+.cl-twp-overlay {{
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(2,4,9,.78);
+    backdrop-filter: blur(9px);
+    -webkit-backdrop-filter: blur(9px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 999999;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .35s ease;
+}}
+.cl-twp-overlay.cl-twp-show {{
+    opacity: 1;
+    pointer-events: auto;
+}}
+.cl-twp-card {{
+    --twp-color: #00d4ff;
+    --twp-glow: rgba(0,212,255,.5);
+    position: relative;
+    width: min(430px, 88vw);
+    background: rgba(6,12,24,.97);
+    border: 1px solid var(--twp-color);
+    border-radius: 22px;
+    padding: 2.3rem 1.9rem 1.9rem;
+    text-align: center;
+    box-shadow: 0 0 70px var(--twp-glow), inset 0 0 30px rgba(255,255,255,.02);
+    transform: scale(.82) translateY(24px);
+    opacity: 0;
+    transition: transform .42s cubic-bezier(.2,.9,.3,1.35), opacity .3s ease;
+    overflow: hidden;
+}}
+.cl-twp-overlay.cl-twp-show .cl-twp-card {{
+    transform: scale(1) translateY(0);
+    opacity: 1;
+}}
+.cl-twp-card::before, .cl-twp-card::after {{
+    content: '';
+    position: absolute;
+    width: 22px; height: 22px;
+    border-color: var(--twp-color);
+}}
+.cl-twp-card::before {{ top: 10px; left: 10px; border-top: 2px solid var(--twp-color); border-left: 2px solid var(--twp-color); }}
+.cl-twp-card::after  {{ bottom: 10px; right: 10px; border-bottom: 2px solid var(--twp-color); border-right: 2px solid var(--twp-color); }}
+.cl-twp-scanbar {{
+    position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, transparent, var(--twp-color), transparent);
+    animation: clTwpScan 2s linear infinite;
+}}
+@keyframes clTwpScan {{ 0%,100% {{ opacity:.25; }} 50% {{ opacity:1; }} }}
+.cl-twp-icon {{
+    font-size: 3rem;
+    margin-bottom: .7rem;
+    filter: drop-shadow(0 0 18px var(--twp-glow));
+    animation: clTwpPulse 1.6s ease-in-out infinite;
+}}
+@keyframes clTwpPulse {{ 0%,100% {{ transform: scale(1); }} 50% {{ transform: scale(1.15); }} }}
+.cl-twp-title {{
+    font-family: var(--font-display, 'Orbitron', monospace);
+    font-size: 1rem;
+    font-weight: 800;
+    letter-spacing: .14em;
+    color: var(--twp-color);
+    text-shadow: 0 0 14px var(--twp-glow);
+    margin-bottom: .9rem;
+}}
+.cl-twp-msg {{ margin-bottom: 1.6rem; }}
+.cl-twp-line {{
+    font-family: var(--font-body, 'Inter', sans-serif);
+    font-size: .92rem;
+    color: #c8d8ea;
+    line-height: 1.7;
+}}
+.cl-twp-ok {{
+    font-family: var(--font-display, 'Rajdhani', sans-serif);
+    font-weight: 800;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    font-size: .85rem;
+    padding: .65rem 2.5rem;
+    border-radius: 10px;
+    border: 1px solid var(--twp-color);
+    background: rgba(255,255,255,.04);
+    color: var(--twp-color);
+    cursor: pointer;
+    box-shadow: 0 0 20px var(--twp-glow);
+    transition: all .2s ease;
+}}
+.cl-twp-ok:hover {{
+    background: var(--twp-color);
+    color: #020409;
+    box-shadow: 0 0 32px var(--twp-glow);
+}}
+@keyframes clTwpShakeSoft {{
+    0%,100% {{ transform: translateX(0); }}
+    25%     {{ transform: translateX(-5px); }}
+    75%     {{ transform: translateX(5px); }}
+}}
+.cl-twp-shake-soft {{ animation: clTwpShakeSoft .45s ease 2; }}
+@keyframes clTwpShakeHard {{
+    10%,90% {{ transform: translate3d(-2px,0,0); }}
+    20%,80% {{ transform: translate3d(4px,0,0); }}
+    30%,50%,70% {{ transform: translate3d(-8px,0,0); }}
+    40%,60% {{ transform: translate3d(8px,0,0); }}
+}}
+.cl-twp-shake-hard {{ animation: clTwpShakeHard .6s cubic-bezier(.36,.07,.19,.97) 2; }}
+</style>
+
+<div class="cl-owb-wrap">
+    <button id="cl-owb-btn-{_uid}" class="{btn_class}" {btn_disabled_att} onclick="return clOwbOpen_{_uid}();">
+        <span>{"🔒" if blocked else "🌐"}</span><span>{btn_label}</span>
+    </button>
+    {note_html}
+</div>
+
+<div id="cl-twp-overlay-{_uid}" class="cl-twp-overlay">
+    <div id="cl-twp-card-{_uid}" class="cl-twp-card" style="--twp-color:{cfg['color']};--twp-glow:{cfg['glow']}">
+        <div class="cl-twp-scanbar"></div>
+        <div class="cl-twp-icon">{cfg['icon']}</div>
+        <div class="cl-twp-title">{cfg['title']}</div>
+        <div class="cl-twp-msg">{lines_html}</div>
+        <button class="cl-twp-ok" onclick="clTwpClose_{_uid}();">✓ OK</button>
+    </div>
+</div>
+
+<script>
+(function() {{
+    function clTwpClose_{_uid}() {{
+        var el = document.getElementById('cl-twp-overlay-{_uid}');
+        if (el) el.classList.remove('cl-twp-show');
+    }}
+    window.clTwpClose_{_uid} = clTwpClose_{_uid};
+
+    function clOwbOpen_{_uid}() {{
+        var blocked = {str(blocked).lower()};
+        if (blocked) {{
+            var card = document.getElementById('cl-twp-card-{_uid}');
+            var overlay = document.getElementById('cl-twp-overlay-{_uid}');
+            if (overlay) overlay.classList.add('cl-twp-show');
+            if (card) {{
+                card.classList.remove('cl-twp-shake-soft', 'cl-twp-shake-hard');
+                void card.offsetWidth;
+                var sc = {_shake_class_js};
+                if (sc) card.classList.add(sc);
+            }}
+            return false;
+        }}
+        window.open({_open_target_js}, '_blank', 'noopener,noreferrer');
+        return false;
+    }}
+    window.clOwbOpen_{_uid} = clOwbOpen_{_uid};
+
+    function clPlaySound_{_uid}(kind) {{
+        try {{
+            var Ctx = window.AudioContext || window.webkitAudioContext;
+            var ctx = new Ctx();
+            function tone(freq, start, dur, type, vol) {{
+                var o = ctx.createOscillator();
+                var g = ctx.createGain();
+                o.type = type || 'sine';
+                o.frequency.setValueAtTime(freq, ctx.currentTime + start);
+                g.gain.setValueAtTime(0, ctx.currentTime + start);
+                g.gain.linearRampToValueAtTime(vol || 0.15, ctx.currentTime + start + 0.02);
+                g.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
+                o.connect(g); g.connect(ctx.destination);
+                o.start(ctx.currentTime + start);
+                o.stop(ctx.currentTime + start + dur + 0.02);
+            }}
+            if (kind === 'success') {{
+                tone(660, 0, 0.12, 'sine', 0.12);
+                tone(880, 0.12, 0.18, 'sine', 0.14);
+            }} else if (kind === 'warning') {{
+                tone(720, 0, 0.10, 'square', 0.10);
+                tone(480, 0.14, 0.12, 'square', 0.10);
+                tone(720, 0.30, 0.10, 'square', 0.10);
+                tone(480, 0.44, 0.12, 'square', 0.10);
+            }} else if (kind === 'alert') {{
+                tone(900, 0, 0.15, 'sawtooth', 0.13);
+                tone(500, 0.16, 0.15, 'sawtooth', 0.13);
+                tone(900, 0.34, 0.15, 'sawtooth', 0.13);
+                tone(500, 0.50, 0.18, 'sawtooth', 0.13);
+            }}
+        }} catch (e) {{}}
+    }}
+
+    var _thisKey = 'cl_twp_{_uid}';
+    var _lastKey = null;
+    try {{ _lastKey = window.sessionStorage.getItem('cl_twp_last_shown'); }} catch (e) {{}}
+    if (_lastKey !== _thisKey) {{
+        try {{ window.sessionStorage.setItem('cl_twp_last_shown', _thisKey); }} catch (e) {{}}
+        setTimeout(function() {{
+            var ov = document.getElementById('cl-twp-overlay-{_uid}');
+            if (ov) ov.classList.add('cl-twp-show');
+            clPlaySound_{_uid}('{cfg["sound"]}');
+        }}, 300);
+    }}
+}})();
+</script>
+""")
+
+# ══════════════════════════════════════════════════════════════════
 # NAVIGATION
 # ══════════════════════════════════════════════════════════════════
 NAV_ICONS = {
@@ -1462,6 +1789,10 @@ elif selected == "URL Scanner":
 
     if st.session_state.result_url:
         render_full_result(st.session_state.result_url)
+
+        # ✚ ADD-ON: animated cyber-security popup + "Open Website" button.
+        # Purely additive — does not affect render_full_result() or scoring above.
+        render_threat_popup(st.session_state.result_url, url_val)
 
         # ── SYSTEM CONSOLE LOGGER (Detailed log requirements) ──────────────────
         _logs = st.session_state.result_url.get("debug_logs", {})
