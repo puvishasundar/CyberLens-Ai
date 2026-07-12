@@ -1,6 +1,6 @@
 # CyberLens AI — Complete Deep Description
 
-**Project by:** Puvisha, Vidhya, Hemanthika  
+**Project by:** Puvisha S, Vidhya Priya P, Hemanthika M
 **Stack:** Python · Streamlit · scikit-learn · NLTK · Plotly · OpenCV · Tesseract OCR
 
 ---
@@ -119,8 +119,8 @@ This is the core feature, with three sub-tabs:
 - **"What CyberLens Protects Against"** — 5 cards: Fake Jobs, Phishing Links, QR Scams, Fake Recruiters, Fraud PDFs
 - **"How It Works"** — 4-step flow: Upload → AI Analysis → Risk Scoring → Threat Report
 - **"Why This Project Matters"** — an honest, mission-driven message about the real-world problem of scam fraud targeting students and job seekers
-- **"Future Vision" Roadmap** — 6 planned features including VirusTotal API integration, email header analysis, BERT model upgrade, PWA mobile app, Telegram/Slack bot, and the already-live multilingual detection (marked ✅)
-- Footer credits the team and lists the tech stack
+- **"Future Vision" Roadmap** — 5 planned features actually listed in the app: a mobile-responsive application, an AI chatbot to guide users, a complete multilingual *website interface* (today only the scam-detection engine is multilingual, not the UI chrome), voice scam detection from uploaded audio, and user login with saved scan history
+- Footer credits the team (Puvisha S, Vidhya Priya P, Hemanthika M) and lists the tech stack
 
 ---
 
@@ -141,19 +141,21 @@ This is the most technically sophisticated part of the project.
 - **Random Forest** (200 trees, depth 12, weight: 2) — adds non-linear decision capacity
 
 **Training Pipeline:**
-1. Data loaded from `sample_data.csv` (text + label columns)
-2. Text preprocessed: lowercased, URLs → `URLTOKEN`, money amounts → `MONEYTOKEN`, phone numbers → `PHONETOKEN`, email addresses → `EMAILTOKEN`, stop words removed, lemmatization applied
+1. Data loaded from `scam.csv` if present (primary, user-supplied dataset), falling back to the legacy `sample_data.csv` if it isn't
+2. Text preprocessed: lowercased, URLs → `URLTOKEN`, money amounts (`$` or `Rs`) → `MONEYTOKEN`, percentages → `PERCENTTOKEN`, long digit strings → `PHONETOKEN`, email addresses → `EMAILTOKEN`, stop words removed, lemmatization applied
 3. 80/20 stratified train/test split
-4. Threshold tuning: instead of a fixed 0.5 cutoff, the best threshold (0.30–0.71) is found by sweeping and maximizing F1 score on the test set
+4. Threshold tuning: instead of a fixed 0.5 cutoff, the best threshold (swept 0.30–0.70) is found by maximizing F1 score on the held-out test set
 5. 5-fold stratified cross-validation to report reliable CV F1 scores
-6. Model and threshold saved as a single dict to `scam_detector.pkl` via `joblib`
+6. Model, ensemble, and tuned threshold are saved together as one dict (`{'pipeline':..., 'threshold':...}`) to `scam_detector.pkl` via `joblib` — there's no separate vectorizer file; the TF-IDF vectorizers live inside the saved pipeline
+7. If no `.pkl` artifact exists on startup but a CSV is present, the app trains automatically on first load
 
 **Inference:**
-- Text is preprocessed → dual TF-IDF transform → ensemble predict_proba
-- **Rule-based pre-filter** runs 8 regex patterns for high-confidence scam signals (e.g., "pay fee within 24 hours," "send OTP," "earn $5000/day work from home"). Each hit adds to a sigmoid-scaled `rule_score` (0.0–1.0)
-- If `rule_score ≥ 0.70` (strong rule signal): final prob = `0.40 × ML + 0.60 × rules` — rules dominate for novel scam text the model hasn't seen
-- Otherwise: `0.60 × ML + 0.40 × rules` — balanced blend
-- Confidence is computed as `distance from 0.5 × 2` — giving a full 0–100% range, avoiding the "artificially low confidence" problem of naive `max(p, 1-p)`
+- Text is preprocessed → dual TF-IDF transform → ensemble `predict_proba`
+- **Rule-based pre-filter** runs 8 regex patterns for high-confidence scam signals (e.g., "pay ... fee/now/urgent," "wire transfer/bitcoin ... send/pay," "send/share ... OTP/Aadhaar/PAN/bank details," "earn $X/day," "limited seats/act fast"). Hits are saturating-scaled into a `rule_score` (0.0–1.0) via `1 − 1/(1 + hits×1.3)` — 1 hit ≈ 0.57, 2 hits ≈ 0.72, 3+ hits ≈ 0.92+
+- If `rule_score ≥ 0.70` (2+ strong rule hits): final probability = `0.35 × ML + 0.65 × rules` — rules dominate for novel scam text the ML model hasn't seen
+- Otherwise: `0.50 × ML + 0.50 × rules` — an even split
+- The scam/legitimate label is decided by comparing this blended probability against a **per-model tuned threshold** (found during training, not a fixed 0.5)
+- Confidence is computed as `|blended_probability − 0.5| × 2` — giving a full 0–100% range, avoiding the "artificially low confidence" problem of naive `max(p, 1-p)`
 
 **Feature Importance:**
 - `get_feature_importance()` extracts the top-N TF-IDF scoring tokens for any input text, providing interpretability ("why did the model flag this?")
@@ -163,42 +165,81 @@ This is the most technically sophisticated part of the project.
 ## 📊 Risk Scoring System (utils.py)
 
 ### Keyword Lexicon (SCAM_KEYWORDS)
-A manually curated dictionary of 80+ scam signals with weighted scores (1–5):
-- **Weight 5:** `send bank details`, `share OTP`, `placement fee`, `offer letter fee`, `send Aadhaar`
-- **Weight 4:** `payment required`, `registration fee`, `wire transfer`, `bitcoin`, `verify your account`, `KYC update`, `guaranteed income`, `no interview`, `account suspended`
-- **Weight 3:** `urgent`, `limited offer`, `lottery`, `you have won`, `bitcoin`, `guaranteed`
-- **Weight 1–2:** `work from home`, `confidential`, `suspicious activity`, `click here`
-- Includes India-specific fraud signals: OTP scams, KYC fraud, Aadhaar/PAN card phishing, job placement fees, UPI scams
+A large, manually curated dictionary of **675 weighted scam-signal phrases** (1–5 points each) — not a small starter list. Highlights:
+- **Weight 5:** high-certainty fraud phrases like sharing OTP/Aadhaar/bank details, placement/offer-letter fees
+- **Weight 3–4:** payment/registration/processing fees, wire transfer, bitcoin, "verify your account," KYC update, guaranteed income, "no interview," account-suspension language
+- **Weight 1–2:** softer signals like "work from home," "urgent," "click here"
+- Heavy coverage of India-specific fraud: OTP scams, KYC/Aadhaar/PAN phishing, UPI scams, "digital arrest"/fake CBI notices, fake electricity-bill threats, fake customs/parcel-fee scams, fake scholarship fees
 
-### Risk Level Scale
+Two supporting lists reduce false positives:
+- **`NEGATION_WORDS` / `SAFE_PHRASES`** — phrases like "no registration fee," "we never ask for OTP," or "official website" are stripped or checked as negating context before a keyword hit counts
+- **`SAFE_KEYWORDS`** (~110 everyday/institutional phrases like "meeting," "invoice," "student portal," "google meet") dampen the score when only weak (weight ≤2) keyword hits accompany them, so routine emails aren't mis-flagged
+
+**Combination bonuses:** on top of individual keyword weights, 25 hand-picked keyword *pairs* (e.g. `"registration fee" + "urgent"`, `"kyc" + "account blocked"`, `"offer letter" + "fee"`) each add an extra 5–7 points when both phrases co-occur — because real scams are far more reliably identified by combinations of signals than any single word.
+
+### Risk Level Scale (exact thresholds from `compute_risk_level`)
+
 | Score | Level | Color |
 |-------|-------|-------|
-| 0–19 | SAFE | 🟢 Green |
-| 20–39 | LOW | 🔵 Blue |
-| 40–64 | MEDIUM | 🟡 Amber |
-| 65–84 | HIGH | 🟠 Orange |
-| 85–100 | CRITICAL | 🔴 Red |
+| 0–20 | SAFE | 🟢 Green |
+| 21–40 | LOW | 🔵 Blue |
+| 41–60 | MEDIUM | 🟡 Amber |
+| 61–80 | HIGH | 🟠 Orange |
+| 81–100 | CRITICAL | 🔴 Red |
 
 ### Score Normalization
-Raw keyword scores are normalized using a concave power curve (`ratio^0.7`) with a ceiling of 50, so moderate scam texts land in MEDIUM/HIGH rather than being incorrectly pushed to CRITICAL.
+The raw keyword score is normalized linearly against a ceiling of 20 points (`min(raw/20, 1.0) × 100`), capped at 100.
 
 ### Final Blended Score
-`0.55 × (ML probability × 100) + 0.45 × (normalized keyword score)`
+The text analyzer dynamically re-weights the ML model vs. the keyword score depending on how strong the keyword signal is, rather than using one fixed ratio:
+- If normalized keyword score ≥ 60 → **30% ML / 70% keywords** (keywords dominate when the lexicon hit is very strong)
+- If normalized keyword score ≤ 10 → **70% ML / 30% keywords** (ML dominates when there's little lexical evidence)
+- Otherwise → **45% ML / 55% keywords** (balanced middle ground)
 
 ---
 
-## 🌐 URL Phishing Analysis (utils.py)
+## 🤖 URL Phishing ML Model (url_model.py)
 
-For every URL scanned, the system checks:
-- **HTTPS:** Missing HTTPS adds +25 risk points
-- **IP-as-domain:** Using a raw IP address (e.g. `192.168.1.1`) adds +35 (near-certain malicious)
-- **URL length:** Over 75 characters adds +12
-- **Phishing keywords in URL:** Words like `login`, `verify`, `secure`, `account`, `paypal`, `microsoft` each add +8
-- **Suspicious TLD:** `.xyz`, `.top`, `.click`, `.loan`, `.pw`, `.tk` etc. each add weighted risk (4×8 = +32 for worst TLDs)
-- **Typosquatting detection:** If the URL contains a known brand's core name but isn't the real domain (e.g. `paypa1.com` instead of `paypal.com`) → +35
-- **Known legitimate domain:** Matching Google, Microsoft, LinkedIn, Infosys, TCS, etc. → subtract 40
+Separate from the text scam model, CyberLens AI trains a **second, dedicated ML classifier purely for URL structure** — it never has to fetch the page to make this prediction.
+
+**Features extracted per URL (11 total):** `url_length`, `num_dots`, `has_https`, `has_ip` (IPv4 **and** IPv6-aware), `num_subdirs`, `num_params`, `suspicious_words` (count of hits against a 39-word phishing-lexicon list: login, verify, banking, webscr, wallet, crypto, urgent, etc.), `tld_risk`, `special_char_count`, `digits_count`, and Shannon `entropy` of the raw URL string.
+
+**`tld_risk` is learned, not hand-coded:** during training, each TLD's historical phishing rate is computed directly from the labeled dataset (`groupby('tld')['y'].mean()`) and stored in a `tld_risk_map`; unseen TLDs fall back to the dataset's overall positive-class prior.
+
+**Model:** soft-voting ensemble of a `RandomForestClassifier` (300 trees) and a `GradientBoostingClassifier` (200 estimators, depth 4), wrapped in a pipeline with median imputation. Trained with the same 80/20 stratified split + F1-maximizing threshold sweep + 5-fold CV pattern as the text model, and saved to `phishing_url_detector.pkl`.
+
+**Inference:** `predict_url()` extracts the 11 features, runs them through the pipeline, and returns a `phishing`/`legitimate` label plus probability and confidence — deliberately **without** fetching the live page (page fetching/content-scam-phrase scanning is handled separately upstream by `analyzer.analyse_webpage_content()` so the app never issues two HTTP requests for one scan).
+
+**Interpretability:** `get_feature_importance_url()` mirrors the text model's explainability — it multiplies the ensemble's averaged `feature_importances_` by this URL's own normalized feature values, so the app can show *which specific features* (e.g. high entropy, many suspicious words) drove a given verdict.
 
 ---
+
+## 🌐 URL Heuristic Risk Analysis (utils.py — `analyse_url`)
+
+Independently of the ML model above, every URL also runs through a 12-point rule-based scorer that produces flags and a heuristic score (capped 0–100):
+
+| Signal | Score added |
+|---|---|
+| Not HTTPS | +25 |
+| IP address used as the domain | +35 |
+| URL longer than 75 characters | +12 |
+| Each phishing-style keyword matched in the URL (from a 33-word list: `login`, `verify`, `secure`, `banking`, `crypto`, `refund`, `giving`, etc.) | +12 per match |
+| Risky TLD (`.xyz`, `.top`, `.click`, `.loan`, `.pw`, `.gq`, `.cf`, `.tk`, `.ml`, `.ga`, `.win`, `.bid`, `.review`, `.country`, `.work`) | tier weight (3 or 4) × 10 |
+| Typosquatting a known brand (e.g. `paypa1.com`) | +40 |
+| `@` symbol in the URL | +30 |
+| Percent-encoded characters | +8 |
+| Redirection query parameter (`redirect=`, `url=`, `next=`, etc.) | +15 |
+| High digit ratio (>15% of characters are digits) | +10 |
+| More than 8 special characters | +12 |
+| High Shannon entropy (>4.5) | +10 |
+| Known link shortener (bit.ly, tinyurl.com, cutt.ly, etc.) | +15 |
+| Domain matches a known-legitimate list (Google, Microsoft, LinkedIn, Infosys, TCS, Flipkart, etc.) | −60 |
+
+*(Note: bare brand names like "paypal" or "google" are deliberately **not** in the keyword list — matching them would flag the legitimate domains themselves. Brand impersonation is instead caught by the dedicated typosquatting check above.)*
+
+The final per-URL risk score used in the app is a **hybrid** of this heuristic score, the URL ML model's probability, the text-scam-model's probability on the page's fetched content, and a bonus for any scam phrases found on the live page — combined and then floored at a minimum ("false-safe floor") whenever the phishing ML model or the page-content model is highly confident, so a low heuristic score alone can never mask a page the AI models are confident is malicious.
+
+
 
 ## 🌍 Multilingual Engine (language_utils.py)
 
@@ -232,16 +273,19 @@ After translation, the UI shows a language badge with the flag, language name, n
 
 | File | Role |
 |------|------|
-| `app.py` | Streamlit frontend — all UI, pages, navigation, result rendering (~800 lines) |
-| `analyzer.py` | High-level analysis wrappers for text, URL, QR, OCR, PDF, company |
-| `ml_model.py` | ML training, inference, preprocessing, rule engine, feature importance |
-| `utils.py` | Keyword lexicon, risk scoring, URL analysis, recruiter/company heuristics |
+| `app.py` | Streamlit frontend — all UI, pages, navigation, result rendering (~2,180 lines) |
+| `analyzer.py` | High-level analysis wrappers for text, URL, QR, OCR, PDF, company (~915 lines) |
+| `ml_model.py` | Text scam-classifier: training, inference, preprocessing, rule engine, feature importance (~370 lines) |
+| `url_model.py` | URL phishing-classifier: feature extraction, training, inference, feature importance (~470 lines) |
+| `utils.py` | Keyword lexicon, risk scoring, heuristic URL analysis, recruiter/company heuristics (~695 lines) |
 | `language_utils.py` | Language detection, translation, language badge HTML |
 | `styles.css` | Custom CSS — glass morphism, animations, color variables, component styles |
-| `scam_detector.pkl` | Trained model artifact (pipeline + optimal threshold) |
-| `vectorizer.pkl` | Saved TF-IDF vectorizer |
-| `sample_data.csv` | Training dataset (text + scam/legitimate labels) |
+| `scam_detector.pkl` | Trained artifact for the **text** model (TF-IDF pipeline + ensemble + tuned threshold, all in one dict) |
+| `phishing_url_detector.pkl` | Trained artifact for the **URL** model (RF+GB ensemble + tuned threshold + learned TLD-risk map) — generated by `url_model.py`, expected alongside the text model but not part of this upload |
+| `scam.csv` / `sample_data.csv` | Training data for the text model — `scam.csv` used if present, `sample_data.csv` as legacy fallback |
+| `url.csv` | Training data for the URL model |
 | `requirements.txt` | All Python dependencies |
+| `packages.txt` | System package dependency (`tesseract-ocr`) required for OCR on Streamlit Cloud |
 
 ---
 
@@ -264,7 +308,9 @@ After translation, the UI shows a language badge with the flag, language name, n
 
 2. **Multi-modal threat detection** — the same AI pipeline handles raw text, images (via OCR), PDFs, URLs, QR codes, and company profiles — all in one unified interface
 
-3. **Interpretable AI** — the system doesn't just output a score; it shows which specific keywords, TF-IDF features, URL flags, and rule patterns contributed to the verdict
+3. **Two independently-trained ML models, not one** — a dual-TF-IDF ensemble for text/message content, and a completely separate 11-feature structural ensemble (Random Forest + Gradient Boosting) purely for URL phishing detection, each with its own F1-tuned decision threshold
+
+4. **Interpretable AI** — the system doesn't just output a score; it shows which specific keywords, TF-IDF features, URL structural features, and rule patterns contributed to the verdict
 
 4. **Ensemble + rule hybrid** — combining a soft-voting ML ensemble with regex-based scam rules means the model catches both statistically-learned patterns AND novel, unseen scam variants
 
