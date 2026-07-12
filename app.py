@@ -237,6 +237,97 @@ st.markdown("""<style>
 .pulse-high{animation:pulseHigh 2s ease-in-out infinite}
 .pulse-critical{animation:pulseCritical 1.5s ease-in-out infinite}
 
+/* ── Keyword & Threat-Level Badges (visibility fix) ─────────────────────
+   These classes are used throughout the Recent Threat History feed and the
+   Scan History Table. They previously had no dedicated color/background
+   rule, so they silently inherited the browser's default black text —
+   invisible against this app's dark background. Colors below match the
+   existing per-level palette used everywhere else in the app and are kept
+   high-contrast in both dark and light contexts. */
+.feed-level-badge {
+    display: inline-block;
+    font-family: var(--font-mono, 'JetBrains Mono', monospace) !important;
+    font-size: 0.68rem !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    padding: 0.2rem 0.65rem !important;
+    border-radius: 8px !important;
+    line-height: 1.6 !important;
+    white-space: nowrap;
+}
+.feed-level-badge.badge-SAFE, .badge-SAFE {
+    color: #00ff9d !important;
+    background: rgba(0,255,157,0.12) !important;
+    border: 1px solid rgba(0,255,157,0.35) !important;
+}
+.feed-level-badge.badge-LOW, .badge-LOW {
+    color: #3b82f6 !important;
+    background: rgba(59,130,246,0.12) !important;
+    border: 1px solid rgba(59,130,246,0.35) !important;
+}
+.feed-level-badge.badge-MEDIUM, .badge-MEDIUM {
+    color: #ffb340 !important;
+    background: rgba(255,179,64,0.14) !important;
+    border: 1px solid rgba(255,179,64,0.4) !important;
+}
+.feed-level-badge.badge-HIGH, .badge-HIGH {
+    color: #f97316 !important;
+    background: rgba(249,115,22,0.14) !important;
+    border: 1px solid rgba(249,115,22,0.4) !important;
+}
+.feed-level-badge.badge-CRITICAL, .badge-CRITICAL {
+    color: #ff3366 !important;
+    background: rgba(255,51,102,0.16) !important;
+    border: 1px solid rgba(255,51,102,0.45) !important;
+}
+.threat-feed-item {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0.65rem 0.9rem;
+    margin-bottom: 0.4rem;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 10px;
+    flex-wrap: wrap;
+}
+.feed-title {
+    font-family: var(--font-body, Inter, sans-serif) !important;
+    font-size: 0.85rem !important;
+    color: var(--text, #c8d8ea) !important;
+    font-weight: 600 !important;
+}
+.feed-type {
+    font-family: var(--font-mono, monospace) !important;
+    font-size: 0.7rem !important;
+    color: var(--text-dim, #5a7a9a) !important;
+    letter-spacing: 0.04em;
+}
+/* Global fallback for .kw-chip (keyword highlight chips). The primary
+   result card renders its own scoped copy of this rule inside an iframe,
+   but any keyword chip rendered directly into the main page (outside that
+   iframe) needs the same explicit color so it's never left unstyled. */
+.kw-chip {
+    display: inline-block !important;
+    margin: 0.25rem 0.3rem !important;
+    padding: 0.3rem 0.75rem !important;
+    background: rgba(0,212,255,0.09) !important;
+    border: 1px solid rgba(0,212,255,0.3) !important;
+    border-radius: 20px !important;
+    font-family: var(--font-mono, monospace) !important;
+    font-size: 0.75rem !important;
+    color: #00d4ff !important;
+}
+@media (max-width: 640px) {
+    .feed-level-badge, .badge-SAFE, .badge-LOW, .badge-MEDIUM, .badge-HIGH, .badge-CRITICAL {
+        font-size: 0.6rem !important;
+        padding: 0.15rem 0.5rem !important;
+    }
+    .kw-chip { font-size: 0.68rem !important; padding: 0.25rem 0.6rem !important; }
+    .threat-feed-item { gap: 0.5rem; padding: 0.55rem 0.7rem; }
+}
+
 /* ── Hidden localStorage bridge textarea ── */
 div:has(> div > textarea[aria-label="__cls_bridge__"]) {
     position: absolute !important;

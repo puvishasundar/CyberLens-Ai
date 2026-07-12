@@ -105,15 +105,37 @@ def analyse_text(text: str) -> dict:
 
     all_suspicious = list(set(kw_result['found'] + feature_words))[:12]
 
-    verdict = (
-        'This content shows strong indicators of a scam or phishing attempt.'
-        if level in ('CRITICAL', 'HIGH') else
-        'This content contains some suspicious elements worth investigating.'
-        if level == 'MEDIUM' else
-        'This content appears largely legitimate but warrants basic verification.'
-        if level == 'LOW' else
-        'This content appears safe with no significant threat indicators detected.'
-    )
+    top_kw_hits = kw_result['found'][:4]
+
+    if level == 'CRITICAL':
+        verdict = (
+            f"🚨 This content shows strong indicators of a scam or phishing attempt, "
+            f"including: {', '.join(top_kw_hits)}. Do not act on any requests within it."
+            if top_kw_hits else
+            "🚨 This content shows strong indicators of a scam or phishing attempt based on AI pattern analysis. "
+            "Do not act on any requests within it."
+        )
+    elif level == 'HIGH':
+        verdict = (
+            f"⚠️ This content shows strong indicators of a scam or phishing attempt, "
+            f"such as: {', '.join(top_kw_hits)}. Treat it with serious caution."
+            if top_kw_hits else
+            "⚠️ This content shows strong indicators of a scam or phishing attempt. Treat it with serious caution."
+        )
+    elif level == 'MEDIUM':
+        verdict = (
+            f"🧐 This content contains some suspicious elements worth investigating, "
+            f"including: {', '.join(top_kw_hits)}. Verify before taking any action."
+            if top_kw_hits else
+            "🧐 This content contains some suspicious elements worth investigating. Verify before taking any action."
+        )
+    elif level == 'LOW':
+        verdict = (
+            "🔵 Only minor risk factors were identified. This content appears largely legitimate "
+            "but still warrants basic verification."
+        )
+    else:
+        verdict = "✅ No major suspicious indicators were detected. This content appears to be safe."
 
     return {
         'risk_score':       blended,
@@ -636,32 +658,50 @@ def analyse_url_full(url: str) -> dict:
 
     indicators = list(dict.fromkeys(indicators))
 
-    # Explanation bullets
+    # ── Explanation bullets ──────────────────────────────────────────────
+    # Built only from signals that actually fed into the risk score above
+    # (real keyword hits, real ML flags, real domain/TLD risk) — not a loose
+    # re-scan of raw text — so the explanation can never claim "high-risk
+    # indicators" when the computed score doesn't reflect that.
     explanation_bullets = []
-    text_lower_all = (content_result.get('content_snippet', '') + " " + url).lower()
-    
+
     if shortener_warning_detected:
         explanation_bullets.append("✓ URL officially suspended/blocked by the provider for abuse")
-    if any(term in text_lower_all for term in ['registration fee', 'joining fee', 'processing fee', 'deposit', 'pay fee']):
-        explanation_bullets.append("✓ Registration/processing fee detected")
-    if any(term in text_lower_all for term in ['urgent', 'immediately', 'immediate', 'act now', 'limited offer', 'expiring', 'today only']):
-        explanation_bullets.append("✓ Urgent/time-pressure language detected")
+    if base['suspicious_kw'] or scam_phrases:
+        kws_display = list(dict.fromkeys(list(base['suspicious_kw']) + list(scam_phrases)))[:4]
+        explanation_bullets.append(f"✓ Suspicious keywords found: {', '.join(kws_display)}")
     if base['tld_risk'] > 0 or base['has_ip'] or base['typosquat_risk'] or '@' in url or is_shortened_domain or is_dest_shortened:
         explanation_bullets.append("✓ Suspicious domain, TLD, or shortened link structure")
-    if len(scam_phrases) > 0 or len(base['suspicious_kw']) > 0:
-        explanation_bullets.append("✓ Scam/phishing keywords identified")
+    if not base['is_https']:
+        explanation_bullets.append("✓ Connection is not secured with HTTPS")
     if (url_ml_result.get('label') == 'phishing' and ml_prob >= 0.5) or (text_ml_prob >= 0.5):
         explanation_bullets.append("✓ Flagged with high confidence by AI threat models")
 
-    if explanation_bullets:
-        verdict = "This URL has been flagged with multiple high-risk indicators:\n\n" + "\n".join(explanation_bullets)
-    else:
-        if final_score >= 65:
-            verdict = "This URL shows strong phishing indicators and is likely malicious."
-        elif final_score >= 30:
-            verdict = "This URL has some suspicious characteristics. Exercise caution."
+    # The tone and content of the verdict always matches the FINAL risk
+    # level, never the raw presence of a loosely-matched keyword.
+    final_level = final_ri['level']
+    if final_level == 'CRITICAL':
+        if explanation_bullets:
+            verdict = "🚨 This URL has been flagged with multiple high-risk indicators:\n\n" + "\n".join(explanation_bullets)
         else:
-            verdict = "This URL appears relatively safe, but always verify the source."
+            verdict = "🚨 This URL shows strong phishing indicators and is likely malicious. Do not enter any personal information."
+    elif final_level == 'HIGH':
+        if explanation_bullets:
+            verdict = "⚠️ This URL shows strong suspicious indicators:\n\n" + "\n".join(explanation_bullets)
+        else:
+            verdict = "⚠️ This URL shows strong phishing indicators and is likely malicious."
+    elif final_level == 'MEDIUM':
+        if explanation_bullets:
+            verdict = "🧐 This URL has some suspicious characteristics worth investigating:\n\n" + "\n".join(explanation_bullets)
+        else:
+            verdict = "🧐 This URL has some suspicious characteristics. Exercise caution before proceeding."
+    elif final_level == 'LOW':
+        if explanation_bullets:
+            verdict = "🔵 Only minor risk factors were identified:\n\n" + "\n".join(explanation_bullets)
+        else:
+            verdict = "🔵 This URL appears mostly safe. Only minor risk factors were identified — basic verification is still recommended."
+    else:  # SAFE
+        verdict = "✅ No major suspicious indicators were detected. This URL appears to be safe."
 
     debug_logs = content_result.get('debug_logs', {})
     debug_logs['final_hybrid_score'] = final_score

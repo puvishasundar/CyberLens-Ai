@@ -24,7 +24,7 @@ SCAM_KEYWORDS = {
     'payment required': 4, 'pay fee': 4, 'registration fee': 4,
     'processing fee': 4, 'security deposit': 4, 'wire transfer': 4,
     'bitcoin': 3, 'crypto payment': 4, 'zelle': 3, 'paypal': 2,
-    'advance payment': 4, 'deposit': 3, 'invest': 2, 'guaranteed income': 4,
+    'advance payment': 4, 'deposit': 2, 'invest': 1, 'guaranteed income': 4,
     'earn guaranteed': 4, 'guaranteed': 3, 'guaranteed placement': 4,
     # Unrealistic promises
     'earn $5000': 4, 'earn $3000': 4, 'earn $2000': 3,
@@ -42,7 +42,7 @@ SCAM_KEYWORDS = {
     # OTP / KYC / Indian cyber fraud patterns
     'otp': 3, 'one time password': 4, 'share your otp': 5,
     'kyc update': 4, 'kyc verification': 4, 'complete your kyc': 4,
-    'kyc expired': 4, 'aadhaar': 2, 'pan card': 2,
+    'kyc expired': 4, 'aadhaar': 1, 'pan card': 1,
     'send aadhaar': 5, 'send pan': 5,
     # Lottery / prize scams
     'you have won': 4, 'you won': 3, 'lucky winner': 4,
@@ -75,7 +75,7 @@ SCAM_KEYWORDS = {
     'mandatory fee': 5, 'mandatory customs': 5, 'mandatory charge': 5,
     'courier scam': 5, 'courier fee': 4, 'courier charges': 4,
     'international parcel': 3, 'international package': 3,
-    'dhl': 2, 'fedex': 2, 'bluedart': 2, 'ekart': 2, 'india post': 2,
+    'dhl': 1, 'fedex': 1, 'bluedart': 1, 'ekart': 1, 'india post': 1,
     'track your parcel': 3, 'track your package': 3, 'track your shipment': 3,
     're-delivery': 3, 'reschedule delivery': 3,
     'within 15 minutes': 5, 'within 30 minutes': 5, 'within 10 minutes': 5,
@@ -90,12 +90,12 @@ SCAM_KEYWORDS = {
     'net banking blocked': 5, 'net banking suspended': 4,
     'upi blocked': 5, 'upi suspended': 4, 'upi limit': 3,
     'bank account frozen': 5, 'account frozen': 5, 'account deactivated': 5,
-    'sbi': 2, 'hdfc': 2, 'icici': 2, 'axis bank': 2, 'kotak': 2,
+    'sbi': 1, 'hdfc': 1, 'icici': 1, 'axis bank': 1, 'kotak': 1,
     'rbi': 3, 'rbi notice': 5, 'reserve bank': 3,
     'your loan is approved': 4, 'pre-approved loan': 4, 'instant loan': 4,
     'loan approved': 4, 'loan offer': 3, 'no collateral': 4,
     'low interest loan': 4, 'personal loan approved': 4,
-    'credit score': 2, 'cibil score': 3, 'improve cibil': 4,
+    'credit score': 1, 'cibil score': 2, 'improve cibil': 4,
     'cashback offer': 3, 'reward points expiring': 4, 'redeem points': 3,
     # Investment / trading / crypto scams
     'guaranteed returns': 5, 'guaranteed profit': 5, 'guaranteed 10x': 5,
@@ -109,7 +109,7 @@ SCAM_KEYWORDS = {
     'trading signal': 4, 'trading group': 3, 'trading telegram': 4,
     'nft investment': 3, 'defi investment': 3, 'passive income': 3,
     'referral bonus': 3, 'refer and earn': 3, 'join our group': 3,
-    'whatsapp group': 2, 'telegram group': 2,
+    'whatsapp group': 1, 'telegram group': 1,
     'sebi registered': 4, 'rbi approved': 5, 'government approved scheme': 5,
     # Romance / social engineering scams
     'gift card': 4, 'itunes gift card': 5, 'google play gift card': 5,
@@ -140,7 +140,7 @@ SCAM_KEYWORDS = {
     'do not delay': 4, 'time sensitive': 3, 'time-sensitive': 3,
     'expires in': 3, 'valid for': 2, 'offer expires': 3,
     'non-payment': 5, 'failure to pay': 5, 'if not paid': 5,
-    'penalty': 3, 'fine': 2, 'legal consequences': 5,
+    'penalty': 2, 'fine': 1, 'legal consequences': 5,
     # Social media / OTT / subscription scams
     'your netflix': 3, 'netflix account': 3, 'netflix suspended': 4,
     'amazon prime': 2, 'prime account': 2, 'hotstar': 2,
@@ -190,7 +190,7 @@ SCAM_KEYWORDS = {
     'wire transfer pending': 4, 'wire transfer failed': 4,
     'charity donation request': 4, 'humanitarian fund release': 5,
     'un compensation fund': 5, 'foreign inheritance': 5, 'lucky draw': 4,
-    'bonus credited': 3, 'exclusive reward': 3, 'fear': 2, 'panic': 3,
+    'bonus credited': 3, 'exclusive reward': 3, 'fear': 1, 'panic': 1,
     'last attempt': 5, 'important notice': 3, 'immediate response required': 5,
     'avoid suspension': 4, 'avoid arrest': 5, 'secret reward': 4,
     'special opportunity': 3, 'limited access': 3, 'do not ignore': 4,
@@ -224,10 +224,10 @@ SCAM_KEYWORDS = {
     'international hiring database': 5, 'employee activation': 5,
     'activate now': 4, 'activate immediately': 5, 'receive offer letter': 4,
     'laptop shipment': 4, 'laptop will be sent': 4, 'contact hr on whatsapp': 5,
-    'hr manager whatsapp': 5, 'whatsapp number': 3, 'digital operations': 3,
+    'hr manager whatsapp': 5, 'whatsapp number': 2, 'digital operations': 2,
     'remote selection': 4, 'name will be removed': 5, 'permanently remove': 5,
-    'removed from database': 5, 'salary package': 3, 'monthly salary': 2,
-    'ctc': 2, 'shortlisted': 3, 'resume shortlisted': 4, 'profile shortlisted': 4,
+    'removed from database': 5, 'salary package': 2, 'monthly salary': 1,
+    'ctc': 1, 'shortlisted': 2, 'resume shortlisted': 3, 'profile shortlisted': 3,
     'hiring database': 5, 'global hiring': 3, 'activate today': 4,
     'activate your account today': 4, 'overseas salary': 4, 'foreign salary': 4,
     # UPI-specific scam patterns
@@ -323,7 +323,10 @@ SAFE_KEYWORDS = {
     'welcome aboard', 'employee onboarding', 'coding round',
     'assessment test', 'interview slot', 'review pending', 'workshop',
     'certificate', 'congratulations on selection', 'campus drive',
-    'team collaboration'
+    'team collaboration', 'google', 'microsoft', 'amazon', 'apple',
+    'official app', 'verified account', 'customer support team',
+    'order confirmation', 'delivery partner', 'terms of service',
+    'privacy notice', 'unsubscribe', 'newsletter'
 }
 
 SAFE_PHRASES = [
@@ -336,12 +339,19 @@ SAFE_PHRASES = [
 
 PHISHING_URL_PATTERNS = [
     r'login', r'signin', r'verify', r'secure', r'account', r'update',
-    r'confirm', r'banking', r'paypal', r'amazon', r'google', r'microsoft',
-    r'apple', r'support', r'help', r'alert', r'notification', r'reset',
-    r'lucky', r'money', r'win', r'share', r'invitation', r'bonus', r'gift',
-    r'prize', r'reward', r'claim', r'pay', r'crypto', r'wallet', r'refund',
-    r'card', r'loan', r'free', r'earn', r'cash', r'deposit', r'giving',
+    r'confirm', r'banking', r'support', r'help', r'alert', r'notification',
+    r'reset', r'lucky', r'money', r'win', r'share', r'invitation', r'bonus',
+    r'gift', r'prize', r'reward', r'claim', r'pay', r'crypto', r'wallet',
+    r'refund', r'card', r'loan', r'free', r'earn', r'cash', r'deposit',
+    r'giving',
 ]
+# NOTE: bare brand names (google, amazon, microsoft, apple, paypal, etc.)
+# are intentionally NOT included here — matching them against the raw URL
+# string flags the legitimate brand domains themselves (e.g. "google.com"
+# contains "google"). Brand *impersonation* is already handled below via
+# `typosquat_risk` (brand name present but domain isn't the real one) and
+# `is_known_legit` (exact/subdomain match against LEGIT_DOMAINS), which are
+# far more accurate signals than a plain substring match.
 
 LEGIT_DOMAINS = {
     'google.com', 'microsoft.com', 'amazon.com', 'linkedin.com',
@@ -374,36 +384,75 @@ def score_keywords(text: str) -> dict:
     total = 0
 
     for kw, weight in SCAM_KEYWORDS.items():
-        for match in re.finditer(re.escape(kw), text_lower):
-            before = text_lower[max(0, match.start()-35):match.start()]
-            words = before.split()
-            if any(word in NEGATION_WORDS for word in words):
-                continue
+        match = re.search(re.escape(kw), text_lower)
+        if not match:
+            continue
+        before = text_lower[max(0, match.start()-35):match.start()]
+        words = before.split()
+        if any(word in NEGATION_WORDS for word in words):
+            continue
+        # Count each distinct keyword once — a single benign word repeated
+        # several times (e.g. in a long legitimate document) should not
+        # inflate the score the way it would if every occurrence counted.
+        found[kw] = weight
+        total += weight
 
-            found[kw] = weight
-            total += weight
-
+    # ── Combination bonuses ──────────────────────────────────────────────
+    # A single generic word is weak evidence on its own; genuine scams are
+    # far more reliably identified by *combinations* of suspicious signals
+    # (e.g. an urgent payment demand, or a fake job offer with a fee).
     combos = [
-        (["registration fee", "urgent"], 3),
-        (["registration fee", "immediately"], 3),
-        (["otp", "bank"], 4),
-        (["lottery", "claim"], 4),
-        (["kyc", "account blocked"], 5),
-        (["offer letter", "fee"], 5),
-        (["click here", "verify"], 4),
-        (["bitcoin", "investment"], 5),
-        (["work from home", "guaranteed"], 4),
-        (["gift card", "send"], 5)
+        (["registration fee", "urgent"], 5),
+        (["registration fee", "immediately"], 5),
+        (["otp", "bank"], 6),
+        (["lottery", "claim"], 6),
+        (["kyc", "account blocked"], 7),
+        (["offer letter", "fee"], 7),
+        (["click here", "verify"], 6),
+        (["bitcoin", "investment"], 6),
+        (["work from home", "guaranteed"], 6),
+        (["gift card", "send"], 7),
+        # Payment request + urgency
+        (["payment required", "urgent"], 6),
+        (["payment required", "act now"], 6),
+        (["pay fee", "immediately"], 6),
+        # Fake/unrealistic job offers
+        (["salary upto", "no interview"], 7),
+        (["ctc upto", "no experience"], 6),
+        (["guaranteed placement", "fee"], 7),
+        (["direct selection", "fee"], 7),
+        # Registration / processing fee combos
+        (["processing fee", "guaranteed"], 6),
+        (["registration fee", "guaranteed"], 6),
+        (["joining fee", "no interview"], 7),
+        # Account verification / phishing pressure
+        (["verify your account", "urgent"], 6),
+        (["confirm your account", "immediately"], 6),
+        (["kyc update", "account blocked"], 7),
+        (["click here", "account suspended"], 7),
+        (["enter your password", "verify your account"], 7),
     ]
 
     for keywords, bonus in combos:
         if all(k in text_lower for k in keywords):
             total += bonus
 
+    # ── Safe-context damping ─────────────────────────────────────────────
+    # Legitimate/institutional language present alongside only weak,
+    # low-severity keyword hits (the previously unused SAFE_KEYWORDS list)
+    # should not, on its own, push everyday content into a false-positive
+    # scam classification.
+    safe_hits = [w for w in SAFE_KEYWORDS if w in text_lower]
+    if safe_hits and found:
+        weak_only = all(w <= 2 for w in found.values())
+        if weak_only:
+            total = max(0, total - (2 * min(len(safe_hits), 4)))
+
     return {
         "score": total,
         "found": list(found.keys()),
         "details": found,
+        "safe_context": safe_hits[:6],
     }
 
 def compute_risk_level(score: float) -> dict:
