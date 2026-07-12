@@ -778,14 +778,18 @@ def log_scan(result: dict, scan_type: str) -> None:
 # threat levels, or any other existing UI/backend behaviour. It only adds:
 #   1. A new "Open Website" action button (didn't exist before).
 #   2. An animated cyber-themed warning popup shown after a scan completes.
-# Both are rendered together as one self-contained HTML/CSS/JS block via
-# st.markdown so the popup can use position:fixed to cover the full page
-# (the same technique already used for the Matrix background canvas above).
+# Rendered via components.html (a real iframe, so its <script> actually runs —
+# st.markdown()/unsafe_allow_html silently ignores <script> tags, which is why
+# an earlier version of this popup never appeared). The popup markup is then
+# relocated into the parent page's own DOM so position:fixed covers the full
+# browser viewport — the same window.parent.document technique this app
+# already relies on for its custom nav bar (see NAVIGATION section below).
 def render_threat_popup(result: dict, url_val: str) -> None:
     if not result or "error" in result:
         return
 
     import hashlib as _hashlib
+    import streamlit.components.v1 as components
 
     level = result.get("risk_level", "SAFE")
     score = result.get("risk_score", 0)
@@ -836,48 +840,40 @@ def render_threat_popup(result: dict, url_val: str) -> None:
     _uid = _hashlib.md5(f"{open_target}|{level}|{score}".encode("utf-8")).hexdigest()[:10]
     _open_target_js = json.dumps(open_target)
     _shake_class_js = json.dumps(cfg["shake"])
+    _blocked_js      = "true" if blocked else "false"
 
-    H(f"""
+    # NOTE ON IMPLEMENTATION: st.markdown()/unsafe_allow_html never executes
+    # <script> tags (browsers ignore scripts inserted via innerHTML — this is
+    # a web-platform rule, not a Streamlit bug). components.html() renders a
+    # real iframe document, so its <script> DOES execute. To still get a
+    # TRUE full-page overlay (not one boxed inside the iframe's small height),
+    # the script below relocates the popup markup + its stylesheet into the
+    # parent page's own DOM — the same window.parent.document technique this
+    # app already relies on for its custom nav bar further down this file.
+    components.html(f"""
+<!DOCTYPE html><html><head>
 <style>
-/* ── Add-on: Open Website action button ─────────────────────────── */
+html,body{{margin:0;padding:0;background:transparent;font-family:'Rajdhani',sans-serif;overflow:hidden;}}
 .cl-owb-wrap {{
-    margin-top: 1.4rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: .55rem;
+    display: flex; flex-direction: column; align-items: center; gap: .5rem;
+    padding-top: 4px;
 }}
 .cl-owb-active, .cl-owb-blocked {{
-    font-family: var(--font-display, 'Rajdhani', sans-serif);
-    font-weight: 700;
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    font-size: .85rem;
-    padding: .85rem 2.4rem;
-    border-radius: 12px;
-    display: inline-flex;
-    align-items: center;
-    gap: .6rem;
-    transition: all .25s ease;
-    border: 1px solid transparent;
+    font-family: 'Rajdhani', sans-serif; font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; font-size: .85rem; padding: .8rem 2.2rem;
+    border-radius: 12px; display: inline-flex; align-items: center; gap: .6rem;
+    transition: all .25s ease; border: 1px solid transparent;
 }}
 .cl-owb-active {{
     cursor: pointer;
     background: linear-gradient(135deg, rgba(0,255,157,.18), rgba(0,212,255,.18));
-    border-color: rgba(0,255,157,.45);
-    color: #00ff9d;
+    border-color: rgba(0,255,157,.45); color: #00ff9d;
     box-shadow: 0 0 24px rgba(0,255,157,.25);
 }}
-.cl-owb-active:hover {{
-    transform: translateY(-2px);
-    box-shadow: 0 0 34px rgba(0,255,157,.45);
-}}
+.cl-owb-active:hover {{ transform: translateY(-2px); box-shadow: 0 0 34px rgba(0,255,157,.45); }}
 .cl-owb-blocked {{
-    cursor: not-allowed;
-    background: rgba(255,51,102,.08);
-    border-color: rgba(255,51,102,.45);
-    color: #ff3366;
-    opacity: .9;
+    cursor: not-allowed; background: rgba(255,51,102,.08);
+    border-color: rgba(255,51,102,.45); color: #ff3366; opacity: .9;
     animation: clOwbBlockedPulse 2.2s ease-in-out infinite;
 }}
 @keyframes clOwbBlockedPulse {{
@@ -885,59 +881,56 @@ def render_threat_popup(result: dict, url_val: str) -> None:
     50%     {{ box-shadow: 0 0 26px rgba(255,51,102,.45); }}
 }}
 .cl-owb-note {{
-    font-family: var(--font-mono, monospace);
-    font-size: .68rem;
-    letter-spacing: .04em;
-    color: var(--text-dim, #5a7a9a);
-    text-align: center;
+    font-family: monospace; font-size: .68rem; letter-spacing: .04em;
+    color: #5a7a9a; text-align: center;
 }}
+</style>
+</head>
+<body>
 
-/* ── Add-on: Threat popup overlay ────────────────────────────────── */
+<div class="cl-owb-wrap">
+    <button id="cl-owb-btn-{_uid}" class="{btn_class}" {btn_disabled_att} onclick="clOwbOpen_{_uid}();return false;">
+        <span>{"🔒" if blocked else "🌐"}</span><span>{btn_label}</span>
+    </button>
+    {note_html}
+</div>
+
+<!-- Popup markup — relocated into the top-level page by the script below so
+     position:fixed covers the WHOLE viewport, not just this small iframe. -->
+<div id="cl-twp-overlay-{_uid}" class="cl-twp-global-item cl-twp-overlay">
+    <div id="cl-twp-card-{_uid}" class="cl-twp-card" style="--twp-color:{cfg['color']};--twp-glow:{cfg['glow']}">
+        <div class="cl-twp-scanbar"></div>
+        <div class="cl-twp-icon">{cfg['icon']}</div>
+        <div class="cl-twp-title">{cfg['title']}</div>
+        <div class="cl-twp-msg">{lines_html}</div>
+        <button class="cl-twp-ok" type="button">✓ OK</button>
+    </div>
+</div>
+
+<style id="__cl_twp_style_src_{_uid}">
 .cl-twp-overlay {{
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100vh;
+    position: fixed; inset: 0; width: 100vw; height: 100vh;
     background: rgba(2,4,9,.78);
-    backdrop-filter: blur(9px);
-    -webkit-backdrop-filter: blur(9px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 999999;
-    opacity: 0;
-    pointer-events: none;
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 999999; opacity: 0; pointer-events: none;
     transition: opacity .35s ease;
+    font-family: 'Rajdhani', sans-serif;
 }}
-.cl-twp-overlay.cl-twp-show {{
-    opacity: 1;
-    pointer-events: auto;
-}}
+.cl-twp-overlay.cl-twp-show {{ opacity: 1; pointer-events: auto; }}
 .cl-twp-card {{
-    --twp-color: #00d4ff;
-    --twp-glow: rgba(0,212,255,.5);
-    position: relative;
-    width: min(430px, 88vw);
-    background: rgba(6,12,24,.97);
-    border: 1px solid var(--twp-color);
-    border-radius: 22px;
-    padding: 2.3rem 1.9rem 1.9rem;
-    text-align: center;
+    --twp-color: #00d4ff; --twp-glow: rgba(0,212,255,.5);
+    position: relative; width: min(430px, 88vw);
+    background: rgba(6,12,24,.97); border: 1px solid var(--twp-color);
+    border-radius: 22px; padding: 2.3rem 1.9rem 1.9rem; text-align: center;
     box-shadow: 0 0 70px var(--twp-glow), inset 0 0 30px rgba(255,255,255,.02);
-    transform: scale(.82) translateY(24px);
-    opacity: 0;
+    transform: scale(.82) translateY(24px); opacity: 0;
     transition: transform .42s cubic-bezier(.2,.9,.3,1.35), opacity .3s ease;
     overflow: hidden;
 }}
-.cl-twp-overlay.cl-twp-show .cl-twp-card {{
-    transform: scale(1) translateY(0);
-    opacity: 1;
-}}
+.cl-twp-overlay.cl-twp-show .cl-twp-card {{ transform: scale(1) translateY(0); opacity: 1; }}
 .cl-twp-card::before, .cl-twp-card::after {{
-    content: '';
-    position: absolute;
-    width: 22px; height: 22px;
-    border-color: var(--twp-color);
+    content: ''; position: absolute; width: 22px; height: 22px; border-color: var(--twp-color);
 }}
 .cl-twp-card::before {{ top: 10px; left: 10px; border-top: 2px solid var(--twp-color); border-left: 2px solid var(--twp-color); }}
 .cl-twp-card::after  {{ bottom: 10px; right: 10px; border-bottom: 2px solid var(--twp-color); border-right: 2px solid var(--twp-color); }}
@@ -948,154 +941,133 @@ def render_threat_popup(result: dict, url_val: str) -> None:
 }}
 @keyframes clTwpScan {{ 0%,100% {{ opacity:.25; }} 50% {{ opacity:1; }} }}
 .cl-twp-icon {{
-    font-size: 3rem;
-    margin-bottom: .7rem;
+    font-size: 3rem; margin-bottom: .7rem;
     filter: drop-shadow(0 0 18px var(--twp-glow));
     animation: clTwpPulse 1.6s ease-in-out infinite;
 }}
 @keyframes clTwpPulse {{ 0%,100% {{ transform: scale(1); }} 50% {{ transform: scale(1.15); }} }}
 .cl-twp-title {{
-    font-family: var(--font-display, 'Orbitron', monospace);
-    font-size: 1rem;
-    font-weight: 800;
-    letter-spacing: .14em;
-    color: var(--twp-color);
-    text-shadow: 0 0 14px var(--twp-glow);
-    margin-bottom: .9rem;
+    font-family: 'Orbitron', monospace; font-size: 1rem; font-weight: 800;
+    letter-spacing: .14em; color: var(--twp-color);
+    text-shadow: 0 0 14px var(--twp-glow); margin-bottom: .9rem;
 }}
 .cl-twp-msg {{ margin-bottom: 1.6rem; }}
-.cl-twp-line {{
-    font-family: var(--font-body, 'Inter', sans-serif);
-    font-size: .92rem;
-    color: #c8d8ea;
-    line-height: 1.7;
-}}
+.cl-twp-line {{ font-family: 'Inter', sans-serif; font-size: .92rem; color: #c8d8ea; line-height: 1.7; }}
 .cl-twp-ok {{
-    font-family: var(--font-display, 'Rajdhani', sans-serif);
-    font-weight: 800;
-    letter-spacing: .1em;
-    text-transform: uppercase;
-    font-size: .85rem;
-    padding: .65rem 2.5rem;
-    border-radius: 10px;
-    border: 1px solid var(--twp-color);
-    background: rgba(255,255,255,.04);
-    color: var(--twp-color);
-    cursor: pointer;
-    box-shadow: 0 0 20px var(--twp-glow);
-    transition: all .2s ease;
+    font-family: 'Rajdhani', sans-serif; font-weight: 800; letter-spacing: .1em;
+    text-transform: uppercase; font-size: .85rem; padding: .65rem 2.5rem;
+    border-radius: 10px; border: 1px solid var(--twp-color);
+    background: rgba(255,255,255,.04); color: var(--twp-color); cursor: pointer;
+    box-shadow: 0 0 20px var(--twp-glow); transition: all .2s ease;
 }}
-.cl-twp-ok:hover {{
-    background: var(--twp-color);
-    color: #020409;
-    box-shadow: 0 0 32px var(--twp-glow);
-}}
+.cl-twp-ok:hover {{ background: var(--twp-color); color: #020409; box-shadow: 0 0 32px var(--twp-glow); }}
 @keyframes clTwpShakeSoft {{
-    0%,100% {{ transform: translateX(0); }}
-    25%     {{ transform: translateX(-5px); }}
-    75%     {{ transform: translateX(5px); }}
+    0%,100% {{ transform: translateX(0); }} 25% {{ transform: translateX(-5px); }} 75% {{ transform: translateX(5px); }}
 }}
 .cl-twp-shake-soft {{ animation: clTwpShakeSoft .45s ease 2; }}
 @keyframes clTwpShakeHard {{
-    10%,90% {{ transform: translate3d(-2px,0,0); }}
-    20%,80% {{ transform: translate3d(4px,0,0); }}
-    30%,50%,70% {{ transform: translate3d(-8px,0,0); }}
-    40%,60% {{ transform: translate3d(8px,0,0); }}
+    10%,90% {{ transform: translate3d(-2px,0,0); }} 20%,80% {{ transform: translate3d(4px,0,0); }}
+    30%,50%,70% {{ transform: translate3d(-8px,0,0); }} 40%,60% {{ transform: translate3d(8px,0,0); }}
 }}
 .cl-twp-shake-hard {{ animation: clTwpShakeHard .6s cubic-bezier(.36,.07,.19,.97) 2; }}
 </style>
 
-<div class="cl-owb-wrap">
-    <button id="cl-owb-btn-{_uid}" class="{btn_class}" {btn_disabled_att} onclick="return clOwbOpen_{_uid}();">
-        <span>{"🔒" if blocked else "🌐"}</span><span>{btn_label}</span>
-    </button>
-    {note_html}
-</div>
-
-<div id="cl-twp-overlay-{_uid}" class="cl-twp-overlay">
-    <div id="cl-twp-card-{_uid}" class="cl-twp-card" style="--twp-color:{cfg['color']};--twp-glow:{cfg['glow']}">
-        <div class="cl-twp-scanbar"></div>
-        <div class="cl-twp-icon">{cfg['icon']}</div>
-        <div class="cl-twp-title">{cfg['title']}</div>
-        <div class="cl-twp-msg">{lines_html}</div>
-        <button class="cl-twp-ok" onclick="clTwpClose_{_uid}();">✓ OK</button>
-    </div>
-</div>
-
 <script>
 (function() {{
-    function clTwpClose_{_uid}() {{
-        var el = document.getElementById('cl-twp-overlay-{_uid}');
-        if (el) el.classList.remove('cl-twp-show');
-    }}
-    window.clTwpClose_{_uid} = clTwpClose_{_uid};
+    try {{
+        var parentDoc = window.parent.document;
 
-    function clOwbOpen_{_uid}() {{
-        var blocked = {str(blocked).lower()};
-        if (blocked) {{
-            var card = document.getElementById('cl-twp-card-{_uid}');
-            var overlay = document.getElementById('cl-twp-overlay-{_uid}');
-            if (overlay) overlay.classList.add('cl-twp-show');
-            if (card) {{
-                card.classList.remove('cl-twp-shake-soft', 'cl-twp-shake-hard');
-                void card.offsetWidth;
-                var sc = {_shake_class_js};
-                if (sc) card.classList.add(sc);
-            }}
-            return false;
+        // 1) Clean up any popup(s) injected by earlier renders in this session
+        //    so they don't silently pile up in the parent page across reruns.
+        var stale = parentDoc.querySelectorAll('.cl-twp-global-item');
+        for (var i = 0; i < stale.length; i++) {{ stale[i].parentNode.removeChild(stale[i]); }}
+
+        var staleStyle = parentDoc.getElementById('cl-twp-global-style');
+        if (staleStyle) staleStyle.parentNode.removeChild(staleStyle);
+
+        // 2) Re-install the popup's stylesheet in the parent page's <head>
+        var styleSrc = document.getElementById('__cl_twp_style_src_{_uid}');
+        var styleNode = parentDoc.createElement('style');
+        styleNode.id = 'cl-twp-global-style';
+        styleNode.textContent = styleSrc ? styleSrc.textContent : '';
+        parentDoc.head.appendChild(styleNode);
+
+        // 3) Move the overlay node itself into the parent page's <body>
+        //    so position:fixed covers the full browser viewport.
+        var overlay = document.getElementById('cl-twp-overlay-{_uid}');
+        parentDoc.body.appendChild(overlay);
+
+        var card  = overlay.querySelector('.cl-twp-card');
+        var okBtn = overlay.querySelector('.cl-twp-ok');
+        if (okBtn) {{
+            okBtn.onclick = function() {{ overlay.classList.remove('cl-twp-show'); }};
         }}
-        window.open({_open_target_js}, '_blank', 'noopener,noreferrer');
-        return false;
-    }}
-    window.clOwbOpen_{_uid} = clOwbOpen_{_uid};
 
-    function clPlaySound_{_uid}(kind) {{
-        try {{
-            var Ctx = window.AudioContext || window.webkitAudioContext;
-            var ctx = new Ctx();
-            function tone(freq, start, dur, type, vol) {{
-                var o = ctx.createOscillator();
-                var g = ctx.createGain();
-                o.type = type || 'sine';
-                o.frequency.setValueAtTime(freq, ctx.currentTime + start);
-                g.gain.setValueAtTime(0, ctx.currentTime + start);
-                g.gain.linearRampToValueAtTime(vol || 0.15, ctx.currentTime + start + 0.02);
-                g.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
-                o.connect(g); g.connect(ctx.destination);
-                o.start(ctx.currentTime + start);
-                o.stop(ctx.currentTime + start + dur + 0.02);
+        // 4) Local "Open Website" button (stays inside this small iframe)
+        //    calls this to either open the link or show/shake the relocated popup.
+        window.clOwbOpen_{_uid} = function() {{
+            if ({_blocked_js}) {{
+                overlay.classList.add('cl-twp-show');
+                if (card) {{
+                    card.classList.remove('cl-twp-shake-soft', 'cl-twp-shake-hard');
+                    void card.offsetWidth;
+                    var sc = {_shake_class_js};
+                    if (sc) card.classList.add(sc);
+                }}
+                return;
             }}
-            if (kind === 'success') {{
-                tone(660, 0, 0.12, 'sine', 0.12);
-                tone(880, 0.12, 0.18, 'sine', 0.14);
-            }} else if (kind === 'warning') {{
-                tone(720, 0, 0.10, 'square', 0.10);
-                tone(480, 0.14, 0.12, 'square', 0.10);
-                tone(720, 0.30, 0.10, 'square', 0.10);
-                tone(480, 0.44, 0.12, 'square', 0.10);
-            }} else if (kind === 'alert') {{
-                tone(900, 0, 0.15, 'sawtooth', 0.13);
-                tone(500, 0.16, 0.15, 'sawtooth', 0.13);
-                tone(900, 0.34, 0.15, 'sawtooth', 0.13);
-                tone(500, 0.50, 0.18, 'sawtooth', 0.13);
-            }}
-        }} catch (e) {{}}
-    }}
+            window.open({_open_target_js}, '_blank', 'noopener,noreferrer');
+        }};
 
-    var _thisKey = 'cl_twp_{_uid}';
-    var _lastKey = null;
-    try {{ _lastKey = window.sessionStorage.getItem('cl_twp_last_shown'); }} catch (e) {{}}
-    if (_lastKey !== _thisKey) {{
-        try {{ window.sessionStorage.setItem('cl_twp_last_shown', _thisKey); }} catch (e) {{}}
-        setTimeout(function() {{
-            var ov = document.getElementById('cl-twp-overlay-{_uid}');
-            if (ov) ov.classList.add('cl-twp-show');
-            clPlaySound_{_uid}('{cfg["sound"]}');
-        }}, 300);
+        // 5) Lightweight synthesized sound cues (Web Audio API — no audio files).
+        function clPlaySound(kind) {{
+            try {{
+                var Ctx = window.parent.AudioContext || window.parent.webkitAudioContext;
+                var ctx = new Ctx();
+                function tone(freq, start, dur, type, vol) {{
+                    var o = ctx.createOscillator();
+                    var g = ctx.createGain();
+                    o.type = type || 'sine';
+                    o.frequency.setValueAtTime(freq, ctx.currentTime + start);
+                    g.gain.setValueAtTime(0, ctx.currentTime + start);
+                    g.gain.linearRampToValueAtTime(vol || 0.15, ctx.currentTime + start + 0.02);
+                    g.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
+                    o.connect(g); g.connect(ctx.destination);
+                    o.start(ctx.currentTime + start);
+                    o.stop(ctx.currentTime + start + dur + 0.02);
+                }}
+                if (kind === 'success') {{
+                    tone(660, 0, 0.12, 'sine', 0.12); tone(880, 0.12, 0.18, 'sine', 0.14);
+                }} else if (kind === 'warning') {{
+                    tone(720, 0, 0.10, 'square', 0.10); tone(480, 0.14, 0.12, 'square', 0.10);
+                    tone(720, 0.30, 0.10, 'square', 0.10); tone(480, 0.44, 0.12, 'square', 0.10);
+                }} else if (kind === 'alert') {{
+                    tone(900, 0, 0.15, 'sawtooth', 0.13); tone(500, 0.16, 0.15, 'sawtooth', 0.13);
+                    tone(900, 0.34, 0.15, 'sawtooth', 0.13); tone(500, 0.50, 0.18, 'sawtooth', 0.13);
+                }}
+            }} catch (e) {{}}
+        }}
+
+        // 6) Auto-show once per distinct scan result (dedup via the parent
+        //    page's own sessionStorage so switching tabs doesn't re-trigger it).
+        var thisKey = 'cl_twp_{_uid}';
+        var lastKey = null;
+        try {{ lastKey = window.parent.sessionStorage.getItem('cl_twp_last_shown'); }} catch (e) {{}}
+        if (lastKey !== thisKey) {{
+            try {{ window.parent.sessionStorage.setItem('cl_twp_last_shown', thisKey); }} catch (e) {{}}
+            setTimeout(function() {{
+                overlay.classList.add('cl-twp-show');
+                clPlaySound('{cfg["sound"]}');
+            }}, 300);
+        }}
+    }} catch (e) {{
+        // If the browser ever blocks parent-document access, fail silently —
+        // the existing scan results / risk scoring are completely unaffected.
     }}
 }})();
 </script>
-""")
+</body></html>
+""", height=150)
 
 # ══════════════════════════════════════════════════════════════════
 # NAVIGATION
