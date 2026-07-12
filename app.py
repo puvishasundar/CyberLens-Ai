@@ -533,38 +533,49 @@ def render_full_result(result: dict) -> None:
     # ── Website Content Analysis (live fetch + text ML) ─────────────────────────
     # Uses the real fetch performed in analyzer.analyse_webpage_content() /
     # analyse_url_full() — content_analysis holds the fetched page data.
-    _content       = result.get("content_analysis", {}) or {}
-    _dbg           = result.get("debug_logs", {}) or {}
-    _site_opened   = bool(_content.get("fetched"))
-    _access_color  = "#00ff9d" if _site_opened else "#ff3366"
-    _access_icon   = "✅" if _site_opened else "❌"
-    _access_text   = "Opened successfully" if _site_opened else "Failed to open"
+    #
+    # UI-ONLY RESTRICTION: this section is only ever built when the current
+    # result came from the URL Scanner page (result["scan_type"] == "URL
+    # Scanner"). analyse_url_full() also gets invoked from inside QR Scanner
+    # and Company Verifier, but those overwrite `scan_type` to their own page
+    # name before render_full_result() ever sees the result, so this check
+    # cleanly limits the section to the URL Scanner without touching any
+    # analysis/scoring logic.
+    content_analysis_html = ""
+    _raw_text = ""
+    if result.get("scan_type") == "URL Scanner":
+        _content       = result.get("content_analysis", {}) or {}
+        _dbg           = result.get("debug_logs", {}) or {}
+        _site_opened   = bool(_content.get("fetched"))
+        _access_color  = "#00ff9d" if _site_opened else "#ff3366"
+        _access_icon   = "✅" if _site_opened else "❌"
+        _access_text   = "Opened successfully" if _site_opened else "Failed to open"
 
-    _raw_text      = (_content.get("extracted_text") or "").strip()
-    _kw_score      = _content.get("keyword_score_normalised", _content.get("keyword_score_raw", 0))
-    _text_ml_label = result.get("text_model_label") or "N/A"
-    _text_ml_prob  = result.get("text_model_probability", 0)
-    _final_combined= _dbg.get("final_hybrid_score", score)
+        _raw_text      = (_content.get("extracted_text") or "").strip()
+        _kw_score      = _content.get("keyword_score_normalised", _content.get("keyword_score_raw", 0))
+        _text_ml_label = result.get("text_model_label") or "N/A"
+        _text_ml_prob  = result.get("text_model_probability", 0)
+        _final_combined= _dbg.get("final_hybrid_score", score)
 
-    if _raw_text:
-        _preview_len   = 300
-        _text_escaped  = _html.escape(_raw_text)
-        _preview_html  = _html.escape(_raw_text[:_preview_len])
-        _remainder_html= _html.escape(_raw_text[_preview_len:])
-        if len(_raw_text) > _preview_len:
-            _text_block = (
-                f'{_preview_html}…'
-                f'<details style="display:inline">'
-                f'<summary style="cursor:pointer;color:#00d4ff;font-family:monospace;'
-                f'font-size:.72rem;display:inline;margin-left:.4rem">Show More</summary>'
-                f'<span>{_remainder_html}</span></details>'
-            )
+        if _raw_text:
+            _preview_len   = 300
+            _text_escaped  = _html.escape(_raw_text)
+            _preview_html  = _html.escape(_raw_text[:_preview_len])
+            _remainder_html= _html.escape(_raw_text[_preview_len:])
+            if len(_raw_text) > _preview_len:
+                _text_block = (
+                    f'{_preview_html}…'
+                    f'<details style="display:inline">'
+                    f'<summary style="cursor:pointer;color:#00d4ff;font-family:monospace;'
+                    f'font-size:.72rem;display:inline;margin-left:.4rem">Show More</summary>'
+                    f'<span>{_remainder_html}</span></details>'
+                )
+            else:
+                _text_block = _text_escaped
         else:
-            _text_block = _text_escaped
-    else:
-        _text_block = '<span style="color:#5a7a9a">No text could be extracted from this page.</span>'
+            _text_block = '<span style="color:#5a7a9a">No text could be extracted from this page.</span>'
 
-    content_analysis_html = f'''
+        content_analysis_html = f'''
   <div class="divider"></div>
   <div class="section-hdr">🌐 Website Content Analysis</div>
   <div class="data-row"><span class="dr-icon">{_access_icon}</span>
@@ -831,7 +842,7 @@ def render_threat_popup(result: dict, url_val: str) -> None:
 
     lines_html = "".join(f'<div class="cl-twp-line">{ln}</div>' for ln in cfg["lines"])
     blocked          = cfg["blocked"]
-    btn_label        = "🔒 BLOCKED" if blocked else "🌐 Open Website"
+    btn_label        = "BLOCKED" if blocked else "Open Website"
     btn_class        = "cl-owb-blocked" if blocked else "cl-owb-active"
     btn_disabled_att = "disabled aria-disabled=\"true\"" if blocked else ""
     note_html        = ('<div class="cl-owb-note">🔒 This action has been locked by '
@@ -1760,11 +1771,14 @@ elif selected == "URL Scanner":
             st.session_state.result_url = result
 
     if st.session_state.result_url:
-        render_full_result(st.session_state.result_url)
-
-        # ✚ ADD-ON: animated cyber-security popup + "Open Website" button.
-        # Purely additive — does not affect render_full_result() or scoring above.
+        # ✚ ADD-ON: animated cyber-security popup + "Open Website"/"Blocked"
+        # action button — rendered directly above the result card (near the
+        # threat status, before the user has to scroll) so the safe/blocked
+        # state is visible immediately. Purely additive — does not affect
+        # render_full_result() or scoring below.
         render_threat_popup(st.session_state.result_url, url_val)
+
+        render_full_result(st.session_state.result_url)
 
         # ── SYSTEM CONSOLE LOGGER (Detailed log requirements) ──────────────────
         _logs = st.session_state.result_url.get("debug_logs", {})
