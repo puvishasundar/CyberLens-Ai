@@ -28,6 +28,7 @@ if os.name == 'nt':
 from utils import (
     score_keywords, compute_risk_level, normalise_score,
     analyse_url, analyse_recruiter_email, analyse_company_name,
+    analyse_email_full, verify_company_identity, _domain_core,
     SCAM_KEYWORDS, SHORTENER_DOMAINS
 )
 from ml_model import predict as ml_predict, get_feature_importance
@@ -744,6 +745,54 @@ def analyse_url_full(url: str) -> dict:
         'debug_logs':      debug_logs,
     }
 
+# ─── QR content-type detection ──────────────────────────────────────────────
+# Recognises the common QR payload shapes (URL, mailto:/bare email, tel:/bare
+# phone number) so the QR scanner can route each type to the correct existing
+# pipeline instead of guessing with a single loose check.
+_EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$')
+_PHONE_RE = re.compile(r'^\+?[0-9][0-9\s\-().]{6,18}[0-9]$')
+
+def detect_qr_content_type(data: str) -> str:
+    """
+    Classify decoded QR payload as one of: URL, EMAIL, PHONE, TEXT.
+    Mirrors the QR payload shapes commonly produced by generators:
+      - URL:   'http://...', 'https://...', or a bare domain like 'example.com/x'
+      - Email: 'mailto:user@domain.com' or a bare email address
+      - Phone: 'tel:+1234567890' or a bare phone number
+      - Text:  anything else (wifi configs, vCards, plain text, etc.)
+    """
+    if not data:
+        return 'TEXT'
+
+    payload = data.strip()
+
+    # ── URL ──
+    if payload.startswith(('http://', 'https://')):
+        return 'URL'
+
+    # ── Email ──
+    if payload.lower().startswith('mailto:'):
+        return 'EMAIL'
+    if _EMAIL_RE.match(payload):
+        return 'EMAIL'
+
+    # ── Phone ──
+    if payload.lower().startswith('tel:'):
+        return 'PHONE'
+    if _PHONE_RE.match(payload):
+        return 'PHONE'
+
+    # ── Bare domain heuristic (no scheme, e.g. "example.com/promo") ──
+    first_segment = payload.split('/')[0].split('?')[0]
+    if '.' in first_segment and ' ' not in first_segment and '@' not in first_segment:
+        # crude but effective TLD-shape check: letters after the last dot
+        tld_candidate = first_segment.rsplit('.', 1)[-1]
+        if tld_candidate.isalpha() and 2 <= len(tld_candidate) <= 24:
+            return 'URL'
+
+    return 'TEXT'
+
+
 def analyse_qr(image_bytes: bytes) -> dict:
     try:
         import cv2
@@ -774,15 +823,37 @@ def analyse_qr(image_bytes: bytes) -> dict:
         if not qr_data:
             return {'error': 'No QR code detected in the image. Please ensure the QR code is clear, well-lit, and not blurry.'}
 
-        qr_type = 'QRCODE'
-        is_url  = qr_data.startswith(('http://', 'https://')) or '.' in qr_data.split('/')[0]
-        result  = {'qr_data': qr_data, 'qr_type': qr_type, 'is_url': is_url}
+        # ── Step 1: identify content type (URL / EMAIL / PHONE / TEXT) ──────
+        content_type = detect_qr_content_type(qr_data)
+        is_url = content_type == 'URL'
+        logger.info("[QR Scanner] Decoded payload classified as %s: %r", content_type, qr_data[:120])
 
-        if is_url:
-            url_result = analyse_url_full(qr_data)
+        result = {
+            'qr_data':      qr_data,
+            'qr_type':      content_type,   # kept for backward-compat with existing UI key
+            'content_type': content_type,
+            'is_url':       is_url,
+        }
+
+        # ── Step 2: route to the correct EXISTING pipeline — no duplicate
+        # detection logic. URLs go through the full URL scanner pipeline
+        # (feature extraction, ML prediction, webpage fetch, text scam
+        # detection, combined risk score); everything else (plain text,
+        # email address, phone number) goes through the same text-scam
+        # detection module used by the Text Scanner. ─────────────────────
+        if content_type == 'URL':
+            # Normalise bare domains (e.g. "example.com/x") to a fetchable
+            # URL before handing off, without altering analyse_url_full()
+            # itself — this keeps the URL pipeline the single source of truth.
+            target_url = qr_data if qr_data.startswith(('http://', 'https://')) else f'http://{qr_data}'
+            url_result = analyse_url_full(target_url)
             result.update(url_result)
         else:
-            text_result = analyse_text(qr_data)
+            # For EMAIL / PHONE / TEXT payloads, strip any URI scheme
+            # (mailto:/tel:) before handing to the text scam detector so it
+            # scores the actual address/number/content, not the scheme noise.
+            text_payload = re.sub(r'^(mailto:|tel:)', '', qr_data, flags=re.IGNORECASE).strip()
+            text_result = analyse_text(text_payload)
             result.update(text_result)
 
         result['scan_type'] = 'QR Scanner'
@@ -871,46 +942,171 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
         return {'error': f'PDF analysis failed: {str(e)}'}
 
 def analyse_company(name: str, email: str, website: str) -> dict:
-    parts = []
+    """
+    Full Company Verifier pipeline.
 
-    company_result   = analyse_company_name(name)
-    recruiter_result = analyse_recruiter_email(email) if email else None
-    url_result       = analyse_url_full(website) if website else None
+    Reuses the existing scanning pipelines rather than re-implementing them:
+      - analyse_url_full()        → the same URL Scanner pipeline (heuristics +
+                                      live page fetch + text ML + URL ML model)
+                                      used on the URL Scanner page, run here
+                                      against the company website.
+      - analyse_email_full()      → recruiter-email pipeline (public/disposable
+                                      provider checks, domain-vs-website match,
+                                      scam keywords, entropy, digit ratio,
+                                      typosquatting) from utils.py.
+      - verify_company_identity() → cross-checks the claimed company name
+                                      against the website domain, page title,
+                                      and fetched page text.
 
-    scores = [company_result['risk_score']]
-    if recruiter_result:
-        scores.append(70 if recruiter_result['is_free_mail'] else 10)
+    On top of those three pipelines, this function adds one more layer:
+    cross-verification between all three inputs (name <-> email <-> website),
+    then folds everything into a single 0-100 trust score with a level
+    classification (Safe / Low / Medium / High / Critical) and a set of
+    human-readable explanation bullets.
+    """
+    name    = (name or '').strip()
+    email   = (email or '').strip()
+    website = (website or '').strip()
+
+    # 1. Run each existing pipeline
+    url_result = analyse_url_full(website) if website else None
+    website_domain = (url_result.get('domain', '') if url_result else '') or ''
+
+    content = (url_result or {}).get('content_analysis', {}) or {}
+    page_text = content.get('extracted_text', '') or content.get('content_snippet', '')
+
+    identity_result = verify_company_identity(
+        name, website_domain=website_domain,
+        page_title=page_text, page_text=page_text,
+    )
+    email_result = analyse_email_full(
+        email, website_domain=website_domain, company_name=name,
+    ) if email else None
+
+    # 2. Cross-verification between name / email / website
+    cross_flags = []
+    cross_penalty = 0
+
+    email_domain = (email_result or {}).get('domain', '') if email_result else ''
+
+    if name and email_result and email_domain:
+        name_tokens = identity_result.get('tokens', [])
+        significant = [t for t in name_tokens if len(t) >= 4] or name_tokens
+        email_blob  = f"{email_result.get('local_part','')} {email_domain}".lower()
+        name_in_email = any(t in email_blob for t in significant) if significant else False
+        if significant and not name_in_email and not email_result.get('domain_matches_website'):
+            cross_flags.append(
+                f'Recruiter email ("{email}") appears unrelated to the company name ("{name}")'
+            )
+            cross_penalty += 20
+
+    if email_result and email_result.get('domain_matches_website') is False and website_domain:
+        cross_flags.append(
+            f'Website ("{website_domain}") and recruiter email domain ("{email_domain}") do not match'
+        )
+        cross_penalty += 15
+
+    if website_domain and identity_result.get('match_score', 0) == 0:
+        cross_penalty += 20
+    elif website_domain and not identity_result.get('name_matches_domain'):
+        cross_penalty += 10
+
+    fully_consistent = (
+        bool(name and email_result and url_result)
+        and identity_result.get('name_matches_domain')
+        and bool(email_result.get('domain_matches_website'))
+    )
+    cross_bonus = 10 if fully_consistent else 0
+    cross_score = max(0, min(100, cross_penalty - cross_bonus))
+
+    # 3. Individual risk scores (0-100, higher = riskier)
+    company_name_risk = min(len(identity_result.get('suspicious_terms', [])) * 20, 80)
+    identity_mismatch_risk = (100 - identity_result.get('match_score', 0)) if website_domain else 0
+    email_risk = email_result.get('email_risk_score', 0) if email_result else 0
+    url_risk   = url_result.get('risk_score', 0) if url_result else 0
+
+    # 4. Weighted combination into a single risk score
+    weighted_parts = []
+    if website:
+        weighted_parts.append((url_risk, 0.35))
+        weighted_parts.append((identity_mismatch_risk, 0.15))
+    if email:
+        weighted_parts.append((email_risk, 0.30))
+    weighted_parts.append((company_name_risk, 0.10))
+    weighted_parts.append((cross_score, 0.10))
+
+    total_weight = sum(w for _, w in weighted_parts) or 1.0
+    risk_score = round(sum(s * w for s, w in weighted_parts) / total_weight, 1)
+    risk_score = max(0.0, min(100.0, risk_score))
+
+    ri = compute_risk_level(risk_score)
+    trust_score = max(0, round(100 - risk_score))
+
+    # 5. Assemble flags / explanation bullets from every layer
+    flags = []
+    if identity_result.get('suspicious_terms'):
+        flags.append(
+            f"Company name contains common fraud-recruitment phrasing: {', '.join(identity_result['suspicious_terms'][:3])}"
+        )
+    if website_domain and not identity_result.get('name_matches_domain'):
+        flags.append(
+            f'Company name "{name}" does not clearly match the website domain ("{website_domain}")' if name else
+            'No company name provided to compare against the website'
+        )
+    if email_result:
+        flags.extend(email_result.get('flags', []))
     if url_result:
-        scores.append(url_result.get('risk_score', 0))
+        flags.extend(url_result.get('flags', url_result.get('indicators', [])))
+    flags.extend(cross_flags)
+    flags = list(dict.fromkeys(flags))
 
-    combined = round(sum(scores) / len(scores), 1)
-    ri       = compute_risk_level(combined)
+    explanation_bullets = [f"- {f}" for f in flags[:8]] or ["- No significant red flags detected across name, email, or website."]
 
-    flags = company_result['suspicious_terms'][:]
-    if recruiter_result and recruiter_result['is_free_mail']:
-        flags.append(f"Free-mail domain used: {recruiter_result['domain']}")
-    if url_result and url_result.get('flags'):
-        flags.extend(url_result['flags'])
+    level = ri['level']
+    if level == 'CRITICAL':
+        verdict = ("This company/recruiter profile shows multiple serious fraud indicators "
+                   "across the name, email, and website:\n\n" + "\n".join(explanation_bullets))
+    elif level == 'HIGH':
+        verdict = ("Strong red flags detected - this profile is unlikely to be legitimate:\n\n"
+                   + "\n".join(explanation_bullets))
+    elif level == 'MEDIUM':
+        verdict = ("Some suspicious or inconsistent elements were found. Verify independently "
+                   "through official channels before proceeding:\n\n" + "\n".join(explanation_bullets))
+    elif level == 'LOW':
+        verdict = ("Only minor risk factors were identified. Still recommended to verify the "
+                   "recruiter and offer through official channels:\n\n" + "\n".join(explanation_bullets))
+    else:
+        verdict = "Company name, recruiter email, and website appear consistent and largely legitimate."
+
+    confidence = min(95, 45 + int(risk_score * 0.5) + (15 if (email and website) else 0))
+
+    logger.info(
+        "[Company Verifier] name=%r email=%r website=%r -> risk=%.1f level=%s "
+        "(url=%.1f email=%.1f identity_mismatch=%.1f cross=%.1f)",
+        name, email, website, risk_score, level, url_risk, email_risk,
+        identity_mismatch_risk, cross_score,
+    )
 
     return {
-        'risk_score':        combined,
-        'risk_level':        ri['level'],
-        'risk_color':        ri['color'],
-        'risk_emoji':        ri['emoji'],
-        'confidence':        min(90, 40 + int(combined)),
-        'company_analysis':  company_result,
-        'recruiter_analysis': recruiter_result,
-        'url_analysis':      url_result,
-        'flags':             flags,
-        'suspicious_kws':    flags[:8],
-        'recommendations':   get_recommendations(ri['level']),
-        'verdict': (
-            'This company/recruiter profile shows serious red flags of fraud.'
-            if combined >= 65 else
-            'Some suspicious elements detected. Verify through official channels.'
-            if combined >= 35 else
-            'Profile appears largely legitimate.'
-        ),
-        'scan_type': 'Company Verifier',
-        'trust_score': max(0, 100 - int(combined)),
+        'risk_score':         risk_score,
+        'risk_level':         level,
+        'risk_color':         ri['color'],
+        'risk_emoji':         ri['emoji'],
+        'confidence':         confidence,
+        'trust_score':        trust_score,
+        'company_analysis':   identity_result,
+        'recruiter_analysis': email_result,
+        'url_analysis':       url_result,
+        'cross_verification': {
+            'flags':      cross_flags,
+            'penalty':    cross_penalty,
+            'bonus':      cross_bonus,
+            'consistent': fully_consistent,
+        },
+        'flags':            flags,
+        'suspicious_kws':   flags[:8],
+        'indicators':       flags,
+        'recommendations':  get_recommendations(level),
+        'verdict':          verdict,
+        'scan_type':        'Company Verifier',
     }

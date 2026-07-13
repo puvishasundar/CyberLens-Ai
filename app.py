@@ -1836,8 +1836,15 @@ elif selected == "QR Scanner":
             if "qr_data" in result:
                 section_header("Decoded Content", "🔓")
                 H(f'<div class="url-display">{result["qr_data"]}</div>')
+                _qr_type_meta = {
+                    "URL":   ("🔗", "URL — routed through the URL Scanner pipeline"),
+                    "EMAIL": ("📧", "Email address — routed through Text Scam Detection"),
+                    "PHONE": ("📞", "Phone number — routed through Text Scam Detection"),
+                    "TEXT":  ("📝", "Plain text — routed through Text Scam Detection"),
+                }
+                _icon, _desc = _qr_type_meta.get(result.get("qr_type", "TEXT"), ("❔", "Unknown content type"))
                 H(f'<div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;font-family:var(--font-mono)">'
-                  f'Type: {result.get("qr_type","UNKNOWN")}</div>')
+                  f'{_icon} Type: {result.get("qr_type","UNKNOWN")} — {_desc}</div>')
             log_scan(result, "QR Scanner")
             st.session_state.result_qr = result
         if st.session_state.result_qr:

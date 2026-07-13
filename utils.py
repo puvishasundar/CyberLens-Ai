@@ -3,7 +3,19 @@
 
 import re
 import math
+from collections import Counter
 from urllib.parse import urlparse
+
+def shannon_entropy(s: str) -> float:
+    """Shannon entropy of a string — used to flag randomly-generated strings
+    (e.g. auto-generated phishing subdomains, or random-looking email local
+    parts). Shared by analyse_url() and the email analysis pipeline so both
+    use identical randomness scoring instead of duplicating the formula."""
+    if not s:
+        return 0.0
+    counts = Counter(s)
+    length = len(s)
+    return -sum((c / length) * math.log2(c / length) for c in counts.values())
 
 # ─── Suspicious Keyword Lexicon ─────────────────────────────────────────────────
 NEGATION_WORDS = {
@@ -565,15 +577,7 @@ def analyse_url(url: str) -> dict:
     if special_chars > 8:
         result['flags'].append(f'Unusually high number of special characters ({special_chars})')
 
-    # 11. Entropy check
-    def shannon_entropy(s: str) -> float:
-        if not s:
-            return 0.0
-        from collections import Counter
-        counts = Counter(s)
-        length = len(s)
-        return -sum((c / length) * math.log2(c / length) for c in counts.values())
-
+    # 11. Entropy check (shared shannon_entropy() helper — see top of file)
     ent = shannon_entropy(url_clean)
     if ent > 4.5:
         result['flags'].append(f'High URL entropy ({round(ent, 2)})')
@@ -633,6 +637,108 @@ SUSPICIOUS_COMPANY_WORDS = [
     '100% placement', 'assured job',
 ]
 
+# ─── Company Verifier — Email Analysis Lexicons ─────────────────────────────
+# Public/free webmail providers. Not inherently malicious, but a recruiter
+# claiming to represent a real company while emailing from one of these is a
+# well-known red flag in job-scam / recruiter-impersonation cases.
+PUBLIC_EMAIL_PROVIDERS = {
+    'gmail.com': 'Gmail', 'googlemail.com': 'Gmail',
+    'yahoo.com': 'Yahoo Mail', 'ymail.com': 'Yahoo Mail', 'yahoo.co.in': 'Yahoo Mail',
+    'outlook.com': 'Outlook', 'hotmail.com': 'Outlook/Hotmail',
+    'live.com': 'Outlook/Live', 'msn.com': 'Outlook/MSN',
+    'aol.com': 'AOL Mail', 'icloud.com': 'iCloud Mail', 'me.com': 'iCloud Mail',
+    'protonmail.com': 'ProtonMail', 'proton.me': 'ProtonMail',
+    'mail.com': 'Mail.com', 'gmx.com': 'GMX', 'zoho.com': 'Zoho Mail',
+    'yandex.com': 'Yandex Mail', 'rediffmail.com': 'Rediffmail',
+    'inbox.com': 'Inbox.com',
+}
+
+# Known temporary / disposable email domains, commonly used to receive scam
+# replies without any trace back to a real identity.
+DISPOSABLE_EMAIL_DOMAINS = {
+    'mailinator.com', 'tempmail.com', 'temp-mail.org', '10minutemail.com',
+    'guerrillamail.com', 'guerrillamail.info', 'throwawaymail.com',
+    'yopmail.com', 'trashmail.com', 'getnada.com', 'fakeinbox.com',
+    'dispostable.com', 'sharklasers.com', 'maildrop.cc', 'mintemail.com',
+    'moakt.com', 'discard.email', 'mailnesia.com', 'spamgourmet.com',
+    'tempinbox.com', 'emailondeck.com', '33mail.com', 'mohmal.com',
+}
+
+# Well-known brand names used to detect typosquatting of the brand itself
+# inside an email or website domain (e.g. "amaz0n", "micros0ft"). Kept
+# separate from LEGIT_DOMAINS (which is full domains) since here we only
+# need the bare brand word.
+TYPOSQUAT_BRANDS = [
+    'google', 'microsoft', 'amazon', 'apple', 'facebook', 'paypal',
+    'linkedin', 'netflix', 'twitter', 'instagram', 'flipkart', 'infosys',
+    'wipro', 'accenture', 'deloitte', 'ibm', 'tcs', 'hcl', 'naukri',
+    'indeed', 'glassdoor', 'walmart', 'adobe', 'oracle', 'salesforce',
+]
+
+# Leetspeak / homoglyph substitution map used to normalise a domain or email
+# before comparing it against TYPOSQUAT_BRANDS, so "amaz0n" / "micr0soft" /
+# "g00gle" normalise back to their real-word form before comparison.
+_LEET_MAP = str.maketrans({
+    '0': 'o', '1': 'l', '3': 'e', '4': 'a', '5': 's',
+    '7': 't', '8': 'b', '$': 's', '@': 'a',
+})
+
+def _leet_normalise(s: str) -> str:
+    return s.lower().translate(_LEET_MAP)
+
+def _levenshtein(a: str, b: str) -> int:
+    """Small dependency-free edit-distance implementation used to catch
+    near-miss typosquats (one inserted/deleted/substituted character) that
+    leetspeak normalisation alone wouldn't catch."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur[j] = min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + cost)
+        prev = cur
+    return prev[-1]
+
+def _domain_core(domain: str) -> str:
+    """Best-effort registrable-name extraction: 'jobs.amazon.co.in' -> 'amazon',
+    'amazon.com' -> 'amazon'. Good enough for brand/typosquat comparison
+    without needing a full public-suffix-list dependency."""
+    domain = (domain or '').lower().strip().replace('www.', '')
+    parts = [p for p in domain.split('.') if p]
+    if not parts:
+        return ''
+    # Strip a trailing country-style TLD pair like co.in / com.au if present
+    generic_second_level = {'co', 'com', 'net', 'org', 'gov', 'edu'}
+    if len(parts) >= 3 and parts[-2] in generic_second_level:
+        return parts[-3]
+    if len(parts) >= 2:
+        return parts[-2]
+    return parts[0]
+
+def detect_domain_typosquat(domain: str) -> dict:
+    """Detect brand impersonation in a bare domain (email domain or website
+    domain) via leetspeak-normalisation + small edit-distance matching
+    against TYPOSQUAT_BRANDS. Returns {'detected': bool, 'target': str|None}.
+    """
+    core = _domain_core(domain)
+    if not core:
+        return {'detected': False, 'target': None}
+    normalised = _leet_normalise(core)
+    for brand in TYPOSQUAT_BRANDS:
+        if normalised == brand:
+            continue  # exact match IS the brand itself, not an impersonation
+        if brand in normalised or normalised in brand:
+            return {'detected': True, 'target': brand}
+        if abs(len(normalised) - len(brand)) <= 2 and _levenshtein(normalised, brand) <= 1:
+            return {'detected': True, 'target': brand}
+    return {'detected': False, 'target': None}
+
 def analyse_recruiter_email(email: str) -> dict:
     email  = email.lower().strip()
     domain = email.split('@')[-1] if '@' in email else ''
@@ -655,6 +761,215 @@ def analyse_company_name(name: str) -> dict:
         'risk_score':       score,
         'risk_level':       compute_risk_level(score),
     }
+
+EMAIL_LOCAL_PART_FLAG_WORDS = [
+    'hr', 'recruiter', 'recruitment', 'hiring', 'jobs', 'job', 'career',
+    'placement', 'noreply', 'no-reply', 'admin', 'official', 'support',
+    'manager', 'urgent', 'payment', 'fee', 'money',
+]
+
+def analyse_email_full(email: str, website_domain: str = '', company_name: str = '') -> dict:
+    """
+    Full recruiter-email analysis pipeline for the Company Verifier.
+
+    Reuses existing shared logic rather than re-implementing it:
+      - score_keywords()      → same scam-phrase lexicon/negation-handling
+                                 used by the Text Scanner and URL page-text
+                                 analysis, run here against the email string.
+      - shannon_entropy()     → same randomness measure used by analyse_url().
+      - detect_domain_typosquat() → same leetspeak/edit-distance typosquat
+                                 logic used for the website domain, applied
+                                 here to the email domain.
+      - compute_risk_level()  → same 5-tier thresholds as every other module.
+    """
+    result = {
+        'email': '', 'local_part': '', 'domain': '',
+        'is_public_provider': False, 'public_provider_name': None,
+        'is_disposable': False,
+        'domain_matches_website': None,   # None = no website provided to compare
+        'suspicious_keyword_hits': [],
+        'has_random_chars': False, 'entropy': 0.0,
+        'has_excessive_numbers': False, 'digit_ratio': 0.0,
+        'typosquat_detected': False, 'typosquat_target': None,
+        'flags': [],
+        'email_risk_score': 0,
+        'email_trust_score': 100,
+        'risk_level': compute_risk_level(0),
+    }
+
+    if not email or not email.strip() or '@' not in email:
+        result['flags'].append('No valid recruiter email provided')
+        return result
+
+    email = email.strip().lower()
+    local_part, _, domain = email.partition('@')
+    result['email']       = email
+    result['local_part']  = local_part
+    result['domain']      = domain
+
+    score = 0
+
+    # 1. Public/free email provider check
+    provider_name = PUBLIC_EMAIL_PROVIDERS.get(domain)
+    if provider_name:
+        result['is_public_provider']   = True
+        result['public_provider_name'] = provider_name
+        result['flags'].append(f'Recruiter uses a free/public email provider ({provider_name})')
+        score += 30
+
+    # 2. Disposable / temporary email domain check
+    if domain in DISPOSABLE_EMAIL_DOMAINS:
+        result['is_disposable'] = True
+        result['flags'].append(f'Disposable/temporary email domain detected ({domain})')
+        score += 45
+
+    # 3. Domain-vs-website comparison
+    if website_domain:
+        website_clean = website_domain.lower().strip().replace('www.', '')
+        if domain == website_clean or _domain_core(domain) == _domain_core(website_clean):
+            result['domain_matches_website'] = True
+        else:
+            result['domain_matches_website'] = False
+            if not result['is_public_provider']:
+                result['flags'].append(
+                    f'Recruiter email domain ("{domain}") does not match the company website domain ("{website_clean}")'
+                )
+                score += 35
+
+    # 4. Suspicious keyword detection — reuse the shared scam-keyword scorer
+    kw_result = score_keywords(f'{local_part} {domain}')
+    if kw_result['found']:
+        result['suspicious_keyword_hits'] = kw_result['found']
+        result['flags'].append(f"Suspicious keyword(s) in email: {', '.join(kw_result['found'][:4])}")
+        score += min(normalise_score(kw_result['score'], ceiling=15.0) * 0.25, 25)
+
+    # Softer local-part word flags (informational — not scored on their own,
+    # only meaningful combined with a free/public provider above)
+    local_flag_hits = [w for w in EMAIL_LOCAL_PART_FLAG_WORDS if w in local_part]
+    if local_flag_hits and result['is_public_provider']:
+        result['flags'].append(
+            f"Generic recruiting term(s) used on a free-mail address: {', '.join(local_flag_hits[:3])}"
+        )
+        score += 8
+
+    # 5. Random-character detection via shared shannon_entropy()
+    ent = shannon_entropy(local_part)
+    result['entropy'] = round(ent, 2)
+    if len(local_part) >= 6 and ent > 3.4:
+        result['has_random_chars'] = True
+        result['flags'].append(f'Recruiter email local-part looks randomly generated (entropy {round(ent,2)})')
+        score += 20
+
+    # 6. Excessive digits in the local part
+    digit_count = sum(c.isdigit() for c in local_part)
+    digit_ratio = digit_count / len(local_part) if local_part else 0
+    result['digit_ratio'] = round(digit_ratio, 2)
+    if digit_ratio > 0.35:
+        result['has_excessive_numbers'] = True
+        result['flags'].append(f'Unusually high proportion of digits in email address ({round(digit_ratio*100)}%)')
+        score += 15
+
+    # 7. Typosquatting of a known brand in the email domain
+    typo = detect_domain_typosquat(domain)
+    if typo['detected']:
+        result['typosquat_detected'] = True
+        result['typosquat_target']   = typo['target']
+        result['flags'].append(f"Email domain appears to impersonate \"{typo['target']}\" (typosquatting)")
+        score += 50
+
+    score = min(round(score), 100)
+    result['email_risk_score']  = score
+    result['email_trust_score'] = max(0, 100 - score)
+    result['risk_level']        = compute_risk_level(score)
+    result['flags'] = list(dict.fromkeys(result['flags']))
+    return result
+
+_COMPANY_SUFFIX_WORDS = {
+    'pvt', 'private', 'ltd', 'limited', 'llc', 'inc', 'incorporated',
+    'corp', 'corporation', 'co', 'company', 'group', 'holdings',
+    'technologies', 'technology', 'solutions', 'services', 'enterprises',
+    'international', 'global', 'industries',
+}
+
+def _company_name_tokens(name: str) -> list:
+    """Lowercase, strip punctuation, and drop generic corporate-suffix
+    words, leaving the distinctive tokens of a company name for matching
+    against a domain / page title / page text."""
+    cleaned = re.sub(r'[^a-z0-9\s]', ' ', name.lower())
+    tokens  = [t for t in cleaned.split() if t and t not in _COMPANY_SUFFIX_WORDS]
+    return tokens
+
+def verify_company_identity(name: str, website_domain: str = '',
+                             page_title: str = '', page_text: str = '') -> dict:
+    """
+    Cross-checks a claimed company name against:
+      - the website's domain name,
+      - the webpage's <title>,
+      - the webpage's extracted visible text.
+    (page_title/page_text are expected to come from analyse_url_full()'s
+    existing content_analysis output — no separate fetch is performed here.)
+    """
+    result = {
+        'name': name, 'tokens': [],
+        'name_matches_domain': False,
+        'name_in_title':       False,
+        'name_in_content':     False,
+        'match_score':         0,
+        'suspicious_terms':    [],
+        'flags':               [],
+    }
+    if not name or not name.strip():
+        result['flags'].append('No company name provided')
+        return result
+
+    tokens = _company_name_tokens(name)
+    result['tokens'] = tokens
+
+    # Reuse the legacy suspicious-company-word heuristic (no duplication)
+    legacy = analyse_company_name(name)
+    result['suspicious_terms'] = legacy['suspicious_terms']
+    if legacy['suspicious_terms']:
+        result['flags'].append(
+            f"Company name contains common fraud-recruitment phrasing: {', '.join(legacy['suspicious_terms'][:3])}"
+        )
+
+    domain_core = _domain_core(website_domain) if website_domain else ''
+    title_lower = (page_title or '').lower()
+    text_lower  = (page_text or '').lower()
+
+    significant = [t for t in tokens if len(t) >= 4] or tokens
+
+    if domain_core and significant:
+        if any(t in domain_core or domain_core in t for t in significant):
+            result['name_matches_domain'] = True
+
+    if title_lower and significant:
+        if any(t in title_lower for t in significant):
+            result['name_in_title'] = True
+
+    if text_lower and significant:
+        if any(t in text_lower for t in significant):
+            result['name_in_content'] = True
+
+    score = 0
+    if result['name_matches_domain']:
+        score += 50
+    if result['name_in_title']:
+        score += 25
+    if result['name_in_content']:
+        score += 25
+    result['match_score'] = score
+
+    if website_domain and score == 0:
+        result['flags'].append(
+            f'Company name "{name}" was not found in the website domain, title, or page content'
+        )
+    elif website_domain and not result['name_matches_domain']:
+        result['flags'].append(
+            f'Company name "{name}" does not resemble the website domain ("{website_domain}")'
+        )
+
+    return result
 
 def make_empty_stats() -> dict:
     return {
