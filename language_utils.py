@@ -176,25 +176,7 @@ def translate_to_english(text: str, src_lang: str) -> dict:
             'error': None,
         }
 
-    # 1️⃣  googletrans (v4 async → use synchronous wrapper)
-    try:
-        from googletrans import Translator
-        t = Translator()
-        result = t.translate(text, src=src_lang, dest='en')
-        translated = result.text
-        if translated and translated.strip():
-            return {
-                'translated_text': translated,
-                'success': True,
-                'method': 'googletrans',
-                'error': None,
-            }
-    except Exception as e1:
-        _err1 = str(e1)
-    else:
-        _err1 = None
-
-    # 2️⃣  deep-translator (GoogleTranslator)
+    # 1️⃣  deep-translator (GoogleTranslator)
     try:
         from deep_translator import GoogleTranslator
         translated = GoogleTranslator(source=src_lang, target='en').translate(text)

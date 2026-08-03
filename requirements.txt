@@ -16,7 +16,8 @@ requests>=2.31.0
 streamlit-local-storage
 # ── Multilingual support ────────────────────────────────────────────────────────
 langdetect>=1.0.9          # Offline language detection (no API key needed)
-googletrans==4.0.0rc1      # Free Google Translate (unofficial, no key)
-deep-translator>=1.11.4    # Fallback translation library
+deep-translator>=1.11.4    # Free Google Translate wrapper (actively maintained, no key)
 # ── URL Scanner: webpage content analysis (new) ─────────────────────────────────
 beautifulsoup4>=4.12.0     # Safe visible-text extraction for scam/phishing scanning
+# ── PDF rendering (used by analyzer.py's high-res PDF page renderer) ────────────
+PyMuPDF>=1.23.0             # imported as `fitz`
