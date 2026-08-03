@@ -97,6 +97,12 @@ def analyse_text(text: str) -> dict:
     blended = (ml_scam_prob * 100 * ml_weight) + (kw_norm * kw_weight)
     blended = min(round(blended, 1), 100.0)
     
+    # Zero-floor for completely safe text
+    ML_SAFE_THRESHOLD = 15.0
+
+    if kw_raw == 0 and (ml_scam_prob * 100) < ML_SAFE_THRESHOLD:
+        blended = 0.0
+    
     risk_info   = compute_risk_level(blended)
     level       = risk_info['level']
     confidence  = round(ml_result['confidence'] * 100, 1)
@@ -793,6 +799,140 @@ def detect_qr_content_type(data: str) -> str:
     return 'TEXT'
 
 
+# ─── Shared image / QR preprocessing helpers ───────────────────────────────
+# Used by analyse_qr(), analyse_ocr_image(), and analyse_pdf() so all three
+# extraction paths benefit from the same accuracy improvements.
+
+def _enhance_image_for_ocr(pil_img):
+    """
+    Preprocess an image to improve OCR accuracy: grayscale -> upscale (if
+    small) -> contrast enhancement (CLAHE) -> denoise -> sharpen -> adaptive
+    threshold. Returns a NEW PIL Image; never mutates the original, and
+    callers should keep the raw image around as a fallback in case the
+    enhanced version happens to OCR worse on a particular file.
+    """
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    cv_img = cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+
+    # Upscale small images so OCR has more pixels to work with
+    h, w = gray.shape[:2]
+    if max(h, w) < 1200:
+        scale = 1200 / max(h, w)
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    # Contrast enhancement
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    # Denoise
+    gray = cv2.fastNlMeansDenoising(gray, h=10)
+
+    # Sharpen (unsharp mask)
+    blurred = cv2.GaussianBlur(gray, (0, 0), sigmaX=3)
+    sharpened = cv2.addWeighted(gray, 1.5, blurred, -0.5, 0)
+
+    # Adaptive threshold — helps OCR on uneven lighting / low contrast scans
+    thresh = cv2.adaptiveThreshold(
+        sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 31, 11,
+    )
+
+    return Image.fromarray(thresh)
+
+
+def _decode_qr_multi(cv_img):
+    """
+    Decode a QR code from a BGR OpenCV image using multiple decoders,
+    scales, and rotations — handles rotated, blurry, or low-contrast codes
+    that a single detectAndDecode() call would miss.
+
+    Order: PyZbar (fast path) -> OpenCV QRCodeDetector (fast path) ->
+    thorough multi-scale/multi-rotation retry with both decoders ->
+    Otsu-thresholded retry -> WeChat QRCode detector (if the OpenCV build
+    includes it). Returns (decoded_string_or_empty, decoder_name).
+    """
+    import cv2
+
+    def _try_pyzbar(img):
+        try:
+            from pyzbar.pyzbar import decode as zbar_decode
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+            results = zbar_decode(gray)
+            if results:
+                return results[0].data.decode('utf-8', errors='ignore')
+        except ImportError:
+            pass
+        except Exception:
+            pass
+        return ''
+
+    def _try_opencv(img, detector):
+        try:
+            data, _, _ = detector.detectAndDecode(img)
+            return data or ''
+        except Exception:
+            return ''
+
+    def _rotate(img, angle):
+        if angle == 90:
+            return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        if angle == 180:
+            return cv2.rotate(img, cv2.ROTATE_180)
+        if angle == 270:
+            return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return img
+
+    qr_detector = cv2.QRCodeDetector()
+
+    # ── Fast path: try the image as-is (covers the vast majority of
+    # clean, upright QR codes without any extra scanning cost) ──
+    data = _try_pyzbar(cv_img)
+    if data:
+        return data, 'pyzbar'
+    data = _try_opencv(cv_img, qr_detector)
+    if data:
+        return data, 'opencv'
+
+    # ── Thorough fallback: multi-scale + multi-rotation, for rotated,
+    # blurry, or low-contrast QR codes ──
+    for scale in (1.5, 2.0, 0.75):
+        scaled = cv2.resize(cv_img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        for angle in (0, 90, 180, 270):
+            rotated = _rotate(scaled, angle)
+            data = _try_pyzbar(rotated)
+            if data:
+                return data, 'pyzbar'
+            data = _try_opencv(rotated, qr_detector)
+            if data:
+                return data, 'opencv'
+
+    # ── Otsu-thresholded (binarised) retry ──
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    data = _try_pyzbar(thresh)
+    if data:
+        return data, 'pyzbar-threshold'
+    gray_3ch = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+    data = _try_opencv(gray_3ch, qr_detector)
+    if data:
+        return data, 'opencv-threshold'
+
+    # ── WeChat QRCode detector, if the OpenCV build includes it ──
+    try:
+        wechat_detector = cv2.wechat_qrcode_WeChatQRCode()
+        texts, _ = wechat_detector.detectAndDecode(cv_img)
+        if texts:
+            return texts[0], 'wechat'
+    except Exception:
+        pass
+
+    return '', ''
+
+
 def analyse_qr(image_bytes: bytes) -> dict:
     try:
         import cv2
@@ -802,23 +942,7 @@ def analyse_qr(image_bytes: bytes) -> dict:
         pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
         cv_img  = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-        qr_detector = cv2.QRCodeDetector()
-        qr_data, bbox, _ = qr_detector.detectAndDecode(cv_img)
-
-        if not qr_data:
-            try:
-                wechat_detector = cv2.wechat_qrcode_WeChatQRCode()
-                texts, _ = wechat_detector.detectAndDecode(cv_img)
-                if texts:
-                    qr_data = texts[0]
-            except Exception:
-                pass
-
-        if not qr_data:
-            gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            gray_3ch = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
-            qr_data, bbox, _ = qr_detector.detectAndDecode(gray_3ch)
+        qr_data, decoder_used = _decode_qr_multi(cv_img)
 
         if not qr_data:
             return {'error': 'No QR code detected in the image. Please ensure the QR code is clear, well-lit, and not blurry.'}
@@ -826,13 +950,14 @@ def analyse_qr(image_bytes: bytes) -> dict:
         # ── Step 1: identify content type (URL / EMAIL / PHONE / TEXT) ──────
         content_type = detect_qr_content_type(qr_data)
         is_url = content_type == 'URL'
-        logger.info("[QR Scanner] Decoded payload classified as %s: %r", content_type, qr_data[:120])
+        logger.info("[QR Scanner] Decoded (%s) payload classified as %s: %r", decoder_used, content_type, qr_data[:120])
 
         result = {
             'qr_data':      qr_data,
             'qr_type':      content_type,   # kept for backward-compat with existing UI key
             'content_type': content_type,
             'is_url':       is_url,
+            'decoder_used': decoder_used,
         }
 
         # ── Step 2: route to the correct EXISTING pipeline — no duplicate
@@ -869,8 +994,22 @@ def analyse_ocr_image(image_bytes: bytes) -> dict:
         import pytesseract
         from PIL import Image
 
-        pil_img     = Image.open(io.BytesIO(image_bytes))
-        extracted   = pytesseract.image_to_string(pil_img).strip()
+        pil_img = Image.open(io.BytesIO(image_bytes))
+
+        # ── Preprocess for accuracy: grayscale, contrast enhancement,
+        # sharpening, denoising, thresholding — then OCR the cleaned-up
+        # image. If that yields nothing (e.g. the enhancement doesn't suit
+        # this particular image), fall back to OCR on the raw image so no
+        # existing functionality is lost. ──
+        extracted = ''
+        try:
+            enhanced  = _enhance_image_for_ocr(pil_img)
+            extracted = pytesseract.image_to_string(enhanced).strip()
+        except Exception as _enh_err:
+            logger.warning("[OCR] Image preprocessing failed, falling back to raw image: %s", _enh_err)
+
+        if not extracted:
+            extracted = pytesseract.image_to_string(pil_img).strip()
 
         if not extracted:
             return {'error': 'No text could be extracted from this image. Ensure the image is clear and contains readable text.'}
@@ -887,23 +1026,156 @@ def analyse_ocr_image(image_bytes: bytes) -> dict:
     except Exception as e:
         return {'error': f'OCR failed: {str(e)}'}
 
+_PDF_MAX_RENDER_PAGES = 20  # cap on pages rendered to images, to keep runtime bounded on huge PDFs
+
+def _render_pdf_pages_high_res(pdf_bytes, dpi=300, max_pages=_PDF_MAX_RENDER_PAGES):
+    """
+    Render PDF pages to high-resolution PIL images (default 300 DPI, can go
+    up to 600 DPI for hard-to-read scans) using PyMuPDF. Used to OCR
+    scanned/image-only pages and to scan every page for QR codes. Returns
+    a list of PIL.Image objects — empty if PyMuPDF isn't installed or
+    rendering fails, so callers must tolerate an empty list and simply
+    keep whatever text-layer extraction they already have.
+    """
+    try:
+        import fitz  # PyMuPDF
+        from PIL import Image
+    except ImportError:
+        return []
+
+    images = []
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+        matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+        for i, page in enumerate(doc):
+            if i >= max_pages:
+                break
+            pix = page.get_pixmap(matrix=matrix)
+            mode = 'RGB' if pix.n < 4 else 'RGBA'
+            img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+            images.append(img.convert('RGB'))
+        doc.close()
+    except Exception as e:
+        logger.warning("[PDF] High-res page rendering failed: %s", e)
+    return images
+
+
+def _render_pdf_page_at_dpi(pdf_bytes, page_index, dpi):
+    """Re-render a single PDF page at a specific (higher) DPI. Returns a
+    PIL.Image or None on failure."""
+    try:
+        import fitz
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+        if page_index >= len(doc):
+            doc.close()
+            return None
+        matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+        pix = doc[page_index].get_pixmap(matrix=matrix)
+        mode = 'RGB' if pix.n < 4 else 'RGBA'
+        img = Image.frombytes(mode, (pix.width, pix.height), pix.samples).convert('RGB')
+        doc.close()
+        return img
+    except Exception as e:
+        logger.warning("[PDF] Page %d re-render at %d DPI failed: %s", page_index, dpi, e)
+        return None
+
+
 def analyse_pdf(pdf_bytes: bytes) -> dict:
     try:
         import pdfplumber
 
         text_pages  = []
         page_count  = 0
+        weak_pages  = []   # indices of pages with little/no extractable text (likely scanned)
 
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             page_count = len(pdf.pages)
-            for page in pdf.pages:
+            for idx, page in enumerate(pdf.pages):
                 pt = page.extract_text()
-                if pt:
+                if pt and pt.strip():
                     text_pages.append(pt)
+                else:
+                    weak_pages.append(idx)
                 if sum(len(t) for t in text_pages) >= 3000:
                     break
 
         full_text = '\n'.join(text_pages)[:3000]
+
+        # ── High-res OCR + QR pass (additive — never removes text already
+        # extracted above) ───────────────────────────────────────────────
+        # Renders pages at 300 DPI (600 DPI retry for pages that still OCR
+        # poorly), then:
+        #   1. OCRs any page pdfplumber found little/no text on, using the
+        #      same preprocessing pipeline as analyse_ocr_image().
+        #   2. Scans every rendered page for QR codes with the same
+        #      multi-scale/multi-decoder logic as analyse_qr().
+        # Degrades gracefully to the pre-existing text-only behaviour if
+        # PyMuPDF isn't installed.
+        qr_codes  = []
+        ocr_added = False
+        try:
+            page_images = _render_pdf_pages_high_res(pdf_bytes, dpi=300)
+
+            if page_images:
+                import cv2
+                import numpy as np
+                import pytesseract
+
+                ocr_chunks = []
+                for i, img in enumerate(page_images):
+                    # ── OCR pages with weak/no text layer ──
+                    if (i in weak_pages or not full_text.strip()) and sum(len(c) for c in ocr_chunks) < 3000:
+                        page_ocr_text = ''
+                        try:
+                            enhanced = _enhance_image_for_ocr(img)
+                            page_ocr_text = pytesseract.image_to_string(enhanced).strip()
+                        except Exception:
+                            pass
+
+                        # Escalate to 600 DPI if the 300 DPI pass barely got anything
+                        if len(page_ocr_text) < 30:
+                            hi_res_img = _render_pdf_page_at_dpi(pdf_bytes, i, dpi=600)
+                            if hi_res_img is not None:
+                                try:
+                                    enhanced_hi = _enhance_image_for_ocr(hi_res_img)
+                                    hi_text = pytesseract.image_to_string(enhanced_hi).strip()
+                                    if len(hi_text) > len(page_ocr_text):
+                                        page_ocr_text = hi_text
+                                except Exception:
+                                    pass
+
+                        if page_ocr_text:
+                            ocr_chunks.append(page_ocr_text)
+                            ocr_added = True
+
+                    # ── Scan this page for QR codes ──
+                    try:
+                        cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                        data, decoder_used = _decode_qr_multi(cv_img)
+                        if data:
+                            qr_codes.append({
+                                'page':         i + 1,
+                                'data':         data,
+                                'content_type': detect_qr_content_type(data),
+                                'decoder_used': decoder_used,
+                            })
+                    except Exception:
+                        pass
+
+                if ocr_chunks:
+                    full_text = (full_text + '\n' + '\n'.join(ocr_chunks)).strip()[:3000]
+        except Exception as e:
+            logger.warning("[PDF] High-res OCR/QR pass failed: %s", e)
+
+        if not full_text.strip() and qr_codes:
+            # Image-only PDF with no OCR-able text, but QR codes were found —
+            # use their decoded payloads as the analysable text instead of
+            # failing outright.
+            full_text = ' '.join(q['data'] for q in qr_codes)[:3000]
 
         if not full_text.strip():
             return {'error': 'No readable text found in this PDF (it may be scanned or image-only).'}
@@ -914,6 +1186,8 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
         analysis['char_count']    = len(full_text)
         analysis['preview_text']  = full_text[:500]
         analysis['scan_type']     = 'PDF Scanner'
+        analysis['qr_codes']      = qr_codes
+        analysis['ocr_applied']   = ocr_added
         return analysis
 
     except ImportError:

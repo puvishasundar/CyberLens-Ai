@@ -303,18 +303,20 @@ def predict(text: str) -> dict:
     threshold = artifact['threshold']
 
     clean    = preprocess_text(text)
-    proba    = pipeline.predict_proba([clean])[0]     # [p_legit, p_scam]
+    proba    = pipeline.predict_proba([clean])[0]
     ml_prob  = float(proba[1])
 
-    # ── Hard override: if 2+ strong rule hits, lean heavily on rules ───────────────
-    # This handles novel scam text the model hasn't been trained on.
-    if rule_score >= 0.70:
-        blended_prob = round(0.35 * ml_prob + 0.65 * rule_score, 4)
-    else:
-        # Balanced 50/50: neither source dominates on uncertain signals
-        blended_prob = round(0.50 * ml_prob + 0.50 * rule_score, 4)
+    # NEW: Zero floor for completely safe text
+    CLEAN_ML_THRESHOLD = 0.15
 
-    label = 'scam' if blended_prob >= threshold else 'legitimate'
+    if rule_score == 0.0 and ml_prob < CLEAN_ML_THRESHOLD:
+        blended_prob = 0.0
+
+    elif rule_score >= 0.70:
+        blended_prob = round(0.35 * ml_prob + 0.65 * rule_score, 4)
+
+    else:
+        blended_prob = round(0.50 * ml_prob + 0.50 * rule_score, 4)
 
     # ── Fix confidence: distance from 0.5 scaled to 0–1 ─────────────────────────
     # Old: max(p, 1-p) gave 60% confidence for a 60% scam score (too low).
