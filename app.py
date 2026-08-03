@@ -9,7 +9,7 @@ from streamlit_local_storage import LocalStorage
 
 # Local modules
 from analyzer import (
-    analyse_text, analyse_url_full, analyse_qr,
+    analyse_text, analyse_text_full, analyse_url_full, analyse_qr,
     analyse_ocr_image, analyse_pdf, analyse_company
 )
 from utils import update_stats, avg_risk, make_empty_stats, compute_risk_level
@@ -1598,7 +1598,13 @@ elif selected == "Analyzer":
                     pb.progress((i + 1) / len(steps)); time.sleep(0)
                 ph.empty(); pb.empty()
 
-                result = analyse_text(text_input)
+                # Combined pipeline: always run Text Analysis; if the pasted
+                # text contains one or more URLs, also run the FULL URL
+                # Analysis pipeline on each one (website content extraction,
+                # threat score, scam explanation, suspicious indicators,
+                # extracted website text) -- automatically, no module switch.
+                combined = analyse_text_full(text_input)
+                result   = combined["text_result"]
                 log_scan(result, "AI Analyzer")
 
                 # ── Language detection badge (safe HTML only) ────────────────
@@ -1630,7 +1636,21 @@ elif selected == "Analyzer":
                         'translation_success': False,
                     }))
 
+                if combined["has_urls"]:
+                    section_header(
+                        f"📝 Text Analysis ({len(combined['urls_found'])} link"
+                        f"{'s' if len(combined['urls_found']) != 1 else ''} detected below)",
+                        "📝",
+                    )
                 render_full_result(result)
+
+                # ── Auto-triggered URL Analysis for every link found in the text ──
+                for url_res in combined["url_results"]:
+                    st.write("")
+                    H('<div class="cyber-divider"></div>')
+                    section_header(f"🔗 URL Analysis — {url_res.get('url')}", "🌐")
+                    log_scan(url_res, "URL Scanner (auto, from Text)")
+                    render_full_result(url_res)
 
     with tab_image:
         st.write("")

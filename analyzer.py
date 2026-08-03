@@ -170,6 +170,115 @@ def analyse_text(text: str) -> dict:
         'translation_error': lang_result.get('translation_error'),
     }
 
+# ─── URL detection inside free-form text (Requirement: TEXT ANALYSIS) ───────
+# Matches explicit schemes (http/https), "www."-prefixed hosts, and bare
+# domain-like tokens (e.g. "bit.ly/xyz", "amaz0n-secure.com") so pasted
+# messages, emails, and SMS content all get their embedded links caught.
+_TEXT_URL_RE = re.compile(
+    r'(?:(?:https?://)[^\s<>"\')]+)'          # explicit http(s)://...
+    r'|(?:www\.[^\s<>"\')]+)'                 # www.example.com/...
+    r'|(?:\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'
+    r'\.[a-zA-Z]{2,24}(?:/[^\s<>"\')]*)?\b)',  # bare domain[/path]
+    re.IGNORECASE,
+)
+
+# Trailing punctuation that regularly gets swept up when a URL ends a
+# sentence ("visit http://evil.com." or "...secure.com!").
+_URL_TRAILING_PUNCT = '.,;:!?)"\''
+
+# Used to strip full email addresses out of the text *before* URL scanning,
+# so "john.doe@example.com" isn't mis-split into two fake bare-domain hits
+# ("john.doe" and "example.com").
+_EMAIL_INLINE_RE = re.compile(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}')
+
+
+def extract_urls_from_text(text: str) -> list:
+    """
+    Find and return every distinct URL/domain mentioned inside a block of
+    free text, in first-seen order. Filters out email addresses and
+    obvious non-URL numeric tokens (e.g. "3.14", "v2.0") that would
+    otherwise match the bare-domain fallback pattern.
+    """
+    if not text:
+        return []
+
+    text_no_emails = _EMAIL_INLINE_RE.sub(' ', text)
+    candidates = _TEXT_URL_RE.findall(text_no_emails)
+    seen, urls = set(), []
+
+    for raw in candidates:
+        u = raw.strip().rstrip(_URL_TRAILING_PUNCT)
+        if not u:
+            continue
+
+        # Belt-and-braces: skip anything that still looks email-shaped.
+        if _EMAIL_RE.match(u) or ('@' in u):
+            continue
+
+        host_part = re.sub(r'^https?://', '', u, flags=re.IGNORECASE).split('/')[0]
+        tld_candidate = host_part.rsplit('.', 1)[-1] if '.' in host_part else ''
+
+        # Reject bare numeric-only "domains" (version numbers, decimals, IDs)
+        # unless it's a proper http(s)/www URL, which we always trust.
+        if not u.lower().startswith(('http://', 'https://', 'www.')):
+            if not tld_candidate.isalpha() or len(tld_candidate) < 2:
+                continue
+            if host_part.replace('.', '').isdigit():
+                continue
+
+        normalised = u if u.lower().startswith(('http://', 'https://')) else f'http://{u}'
+
+        key = normalised.lower()
+        if key not in seen:
+            seen.add(key)
+            urls.append(normalised)
+
+    return urls
+
+
+def analyse_text_full(text: str, max_urls: int = 3) -> dict:
+    """
+    Orchestrator for the Text Analysis module.
+
+    Requirement: if the pasted text contains one or more URLs, run BOTH
+    Text Analysis (on the full message) and full URL Analysis (on each
+    embedded link -- website content extraction, threat score, scam
+    explanation, suspicious indicators, extracted website text), then
+    return everything needed to display a single combined report,
+    without the user having to switch modules.
+
+    Returns:
+        {
+            'text_result':  <dict from analyse_text()>,
+            'urls_found':   [<str>, ...],
+            'url_results':  [{'url': <str>, **<dict from analyse_url_full()>}, ...],
+            'has_urls':     bool,
+            'scan_type':    'Text Analysis',
+        }
+    """
+    text_result = analyse_text(text)
+
+    urls_found = extract_urls_from_text(text)
+    url_results = []
+    for u in urls_found[:max_urls]:
+        try:
+            r = analyse_url_full(u)
+        except Exception as e:
+            r = {'error': f'URL analysis failed for {u}: {e}'}
+        r = dict(r)
+        r['url'] = r.get('url', u)
+        r['scan_type'] = 'URL Scanner'   # so the UI renders the full URL card
+        url_results.append(r)
+
+    return {
+        'text_result':  text_result,
+        'urls_found':   urls_found,
+        'url_results':  url_results,
+        'has_urls':     bool(urls_found),
+        'scan_type':    'Text Analysis',
+    }
+
+
 SCAM_CONTENT_PHRASES = [
     "congratulations! you won", "congratulations, you won", "you have won",
     "you've won", "claim your prize", "win an iphone", "win a free",
