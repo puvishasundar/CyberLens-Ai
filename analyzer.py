@@ -206,25 +206,142 @@ SCAM_CONTENT_PHRASES = [
     "call this number for refund", "fake customer care agent",
 ]
 
-def fetch_via_playwright(url: str, timeout_ms: int = 10000) -> tuple:
+_BOILERPLATE_TAGS = ['script', 'style', 'noscript', 'head', 'svg', 'iframe',
+                     'nav', 'footer', 'header', 'aside', 'form']
+
+# Short, generic nav/menu strings that add noise but no signal. Anything
+# exactly matching one of these (case-insensitive) after stripping is dropped.
+_NAV_JUNK = {
+    'home', 'menu', 'search', 'login', 'sign in', 'sign up', 'cart', 'close',
+    'skip to content', 'toggle navigation', 'privacy policy', 'terms of service',
+    'cookie policy', 'accept', 'accept all', 'accept cookies', 'reject all',
+    'subscribe', 'back to top', '×', '»', '«',
+}
+
+
+def _extract_visible_text(html_content: str) -> str:
+    """
+    Single-pass, de-duplicated visible-text extraction.
+
+    Walks the DOM ONCE using BeautifulSoup's own text-node iteration
+    (soup.find_all(string=True)) rather than re-querying nested tags like
+    div/span/p/li separately — the old approach called get_text() on a <div>
+    AND on every <span> inside it, double- and triple-counting the same text
+    and corrupting the "how much real content did we get" length check.
+    """
+    if not html_content:
+        return ""
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+    for tag in soup(_BOILERPLATE_TAGS):
+        tag.decompose()
+
+    pieces = []
+
+    if soup.title and soup.title.string:
+        pieces.append(soup.title.string.strip())
+
+    meta_desc = soup.find('meta', attrs={'name': 'description'})
+    if meta_desc and meta_desc.get('content'):
+        pieces.append(meta_desc.get('content').strip())
+    meta_og = soup.find('meta', attrs={'property': 'og:description'})
+    if meta_og and meta_og.get('content'):
+        pieces.append(meta_og.get('content').strip())
+
+    # One walk over real text nodes — no double counting from parent/child tags.
+    for node in soup.find_all(string=True):
+        parent_name = getattr(node.parent, 'name', None)
+        if parent_name in ('script', 'style', 'title'):
+            continue
+        style = (node.parent.get('style', '') if node.parent else '') or ''
+        style = style.replace(' ', '').lower()
+        if 'display:none' in style or 'visibility:hidden' in style:
+            continue
+        txt = node.strip()
+        if not txt:
+            continue
+        if txt.lower() in _NAV_JUNK:
+            continue
+        pieces.append(txt)
+
+    # Attributes that carry visible/meaningful text but aren't text nodes.
+    for inp in soup.find_all('input'):
+        placeholder = inp.get('placeholder')
+        if placeholder:
+            pieces.append(placeholder.strip())
+        if inp.get('type') in ('button', 'submit') and inp.get('value'):
+            pieces.append(inp.get('value').strip())
+
+    for img in soup.find_all('img'):
+        alt = img.get('alt')
+        if alt and len(alt.strip()) > 2:
+            pieces.append(alt.strip())
+
+    text = ' '.join(pieces)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def fetch_via_playwright(url: str, timeout_ms: int = 15000) -> tuple:
+    """
+    Render a page with a real headless browser for JS-heavy / bot-gated sites.
+
+    Key robustness choices:
+      - 'domcontentloaded' first: this resolves as soon as the DOM is parsed,
+        instead of 'networkidle', which many real-world sites (ads, analytics
+        beacons, chat widgets, websockets) never satisfy, causing a hard
+        Playwright TimeoutError and a totally empty result under the old code.
+      - We then best-effort wait for network idle for a short grace period,
+        but a timeout there is NOT treated as failure — whatever DOM exists
+        at that point is still returned.
+      - A small fixed settle delay lets lazy-loaded / hydrated content paint.
+      - Extra headers + a realistic viewport/UA reduce basic bot-blocking.
+    """
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled'],
+            )
             context = browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                viewport={'width': 1280, 'height': 800}
+                user_agent=('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                            '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
+                viewport={'width': 1366, 'height': 900},
+                locale='en-US',
+                extra_http_headers={
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
             )
             page = context.new_page()
-            response = page.goto(url, timeout=timeout_ms, wait_until='networkidle')
+
+            status = None
+            try:
+                response = page.goto(url, timeout=timeout_ms, wait_until='domcontentloaded')
+                status = response.status if response else None
+            except Exception as goto_err:
+                # Even a slow/failed goto often leaves a usable partial DOM
+                # (e.g. redirected, or the request itself hung after the
+                # document started rendering). Keep going instead of bailing.
+                logger.warning("[Playwright] goto() raised for %s: %s", url, goto_err)
+
+            # Best-effort settle: don't fail the whole fetch if this times out.
+            try:
+                page.wait_for_load_state('networkidle', timeout=4000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1200)  # let hydration/lazy content paint
+
             html = page.content()
-            status = response.status if response else 200
             browser.close()
-            return html, status, None
+
+            if not html or len(html) < 50:
+                return None, status, "Playwright returned an empty page"
+            return html, status or 200, None
     except Exception as e:
         return None, None, str(e)
 
-def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
+def analyse_webpage_content(url: str, timeout: int = 12) -> dict:
     """
     Safely fetch HTML, parses, runs JS execution if needed, checks keywords, 
     and passes extracted text directly to the text scam model.
@@ -270,8 +387,14 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
     }
 
     html_content = ""
@@ -295,6 +418,9 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
         if 'cloudflare' in server_header or 'cloudflare' in resp.text.lower() or 'ray id' in resp.text.lower():
             is_cloudflare = True
 
+        content_type = resp.headers.get('Content-Type', '').lower()
+        is_html_like = ('html' in content_type) or (not content_type and resp.text.lstrip().startswith('<'))
+
         if status_code == 403:
             if is_cloudflare:
                 result['error'] = "Access blocked by Cloudflare bot protection (HTTP 403)."
@@ -307,6 +433,11 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
         elif status_code >= 500:
             result['error'] = f"The website server returned an error (HTTP {status_code})."
             logger.warning("[URL Scanner] %s (%s)", result['error'], fetch_url)
+        elif not is_html_like:
+            # Non-HTML response (PDF, image, JSON, binary download, etc.) — no
+            # point running BeautifulSoup/Playwright on it.
+            result['error'] = f"This URL did not return an HTML page (Content-Type: {content_type or 'unknown'})."
+            logger.info("[URL Scanner] Skipping non-HTML content for %s (%s)", fetch_url, content_type)
         else:
             resp.raise_for_status()
             html_content = resp.text
@@ -330,40 +461,7 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
 
     visible_text = ""
     if html_content:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        for tag in soup(['script', 'style', 'noscript', 'head', 'svg', 'iframe']):
-            tag.decompose()
-
-        extracted_pieces = []
-        if soup.title and soup.title.string:
-            extracted_pieces.append(soup.title.string.strip())
-        
-        meta_desc = soup.find('meta', attrs={'name': 'description'})
-        if meta_desc and meta_desc.get('content'):
-            extracted_pieces.append(meta_desc.get('content').strip())
-
-        for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span', 'button', 'label', 'li']):
-            style = tag.get('style', '')
-            if 'display:none' in style.replace(' ', '') or 'visibility:hidden' in style.replace(' ', ''):
-                continue
-            txt = tag.get_text(strip=True)
-            if txt:
-                extracted_pieces.append(txt)
-
-        for inp in soup.find_all('input'):
-            placeholder = inp.get('placeholder')
-            if placeholder:
-                extracted_pieces.append(placeholder.strip())
-            if inp.get('type') in ['button', 'submit'] and inp.get('value'):
-                extracted_pieces.append(inp.get('value').strip())
-
-        for img in soup.find_all('img'):
-            alt = img.get('alt')
-            if alt:
-                extracted_pieces.append(alt.strip())
-
-        visible_text = ' '.join(extracted_pieces)
-        visible_text = re.sub(r'\s+', ' ', visible_text).strip()
+        visible_text = _extract_visible_text(html_content)
         logger.info(
             "[URL Scanner] Step 2/5 — static extraction: %d chars of visible text (method=%s)",
             len(visible_text), extraction_method,
@@ -389,49 +487,22 @@ def analyse_webpage_content(url: str, timeout: int = 8) -> dict:
                 if pw_err:
                     logger.warning("[URL Scanner] Playwright reported an error for %s: %s", fetch_url, pw_err)
                 if pw_html:
-                    html_content = pw_html
-                    status_code = pw_status or 200
-                    result['error'] = None
-                    extraction_method = "Playwright rendering"
-                    js_rendering_used = True
-                    
-                    soup = BeautifulSoup(html_content, 'html.parser')
-                    for tag in soup(['script', 'style', 'noscript', 'head', 'svg', 'iframe']):
-                        tag.decompose()
-                        
-                    extracted_pieces = []
-                    if soup.title and soup.title.string:
-                        extracted_pieces.append(soup.title.string.strip())
-                    
-                    meta_desc = soup.find('meta', attrs={'name': 'description'})
-                    if meta_desc and meta_desc.get('content'):
-                        extracted_pieces.append(meta_desc.get('content').strip())
-
-                    for tag in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div', 'span', 'button', 'label', 'li']):
-                        style = tag.get('style', '')
-                        if 'display:none' in style.replace(' ', '') or 'visibility:hidden' in style.replace(' ', ''):
-                            continue
-                        txt = tag.get_text(strip=True)
-                        if txt:
-                            extracted_pieces.append(txt)
-
-                    for inp in soup.find_all('input'):
-                        placeholder = inp.get('placeholder')
-                        if placeholder:
-                            extracted_pieces.append(placeholder.strip())
-                        if inp.get('type') in ['button', 'submit'] and inp.get('value'):
-                            extracted_pieces.append(inp.get('value').strip())
-
-                    for img in soup.find_all('img'):
-                        alt = img.get('alt')
-                        if alt:
-                            extracted_pieces.append(alt.strip())
-
-                    visible_text = ' '.join(extracted_pieces)
-                    visible_text = re.sub(r'\s+', ' ', visible_text).strip()
+                    pw_text = _extract_visible_text(pw_html)
+                    # Only switch to the Playwright result if it actually got
+                    # us MORE content than the static pass — otherwise keep
+                    # whatever static HTML/text we already had (e.g. a page
+                    # that legitimately just has little text shouldn't be
+                    # overwritten with a worse render).
+                    if len(pw_text) > len(visible_text):
+                        html_content = pw_html
+                        status_code = pw_status or 200
+                        result['error'] = None
+                        extraction_method = "Playwright rendering"
+                        js_rendering_used = True
+                        visible_text = pw_text
                     logger.info(
-                        "[URL Scanner] Playwright re-extraction complete: %d chars of visible text",
-                        len(visible_text),
+                        "[URL Scanner] Playwright re-extraction complete: %d chars of visible text (used=%s)",
+                        len(pw_text), js_rendering_used,
                     )
             except ImportError:
                 logger.warning(
