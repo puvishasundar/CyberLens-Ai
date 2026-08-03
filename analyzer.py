@@ -803,13 +803,76 @@ def detect_qr_content_type(data: str) -> str:
 # Used by analyse_qr(), analyse_ocr_image(), and analyse_pdf() so all three
 # extraction paths benefit from the same accuracy improvements.
 
+def _deskew_image(gray):
+    """
+    Estimate and correct small page rotation using the minimum-area
+    bounding rectangle of the foreground (text) pixels.
+
+    Why this matters for the "words getting merged" symptom: even a
+    2-5 degree skew makes ascenders/descenders from one text line lean
+    into the line above or below, and makes the gaps between words on a
+    slanted line inconsistent. Tesseract's line/word segmentation is very
+    sensitive to this, so straightening the page BEFORE thresholding fixes
+    a large share of merged-word and dropped-space errors for free.
+
+    Returns the original array unchanged if there isn't enough foreground
+    to estimate an angle safely, or if the estimated angle is negligible
+    (already straight) or implausibly large (likely a bad estimate on a
+    noisy image) — this keeps the correction conservative so it can't make
+    a clean image worse.
+    """
+    import cv2
+    import numpy as np
+
+    inverted = cv2.bitwise_not(gray)
+    _, bw = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    coords = np.column_stack(np.where(bw > 0))
+    if coords.shape[0] < 50:
+        return gray
+
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+
+    if abs(angle) < 0.3 or abs(angle) > 15:
+        return gray  # already straight, or estimate is unreliable
+
+    h, w = gray.shape[:2]
+    center = (w // 2, h // 2)
+    matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(
+        gray, matrix, (w, h),
+        flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE,
+    )
+
+
 def _enhance_image_for_ocr(pil_img):
     """
-    Preprocess an image to improve OCR accuracy: grayscale -> upscale (if
-    small) -> contrast enhancement (CLAHE) -> denoise -> sharpen -> adaptive
-    threshold. Returns a NEW PIL Image; never mutates the original, and
-    callers should keep the raw image around as a fallback in case the
-    enhanced version happens to OCR worse on a particular file.
+    Preprocess an image to improve OCR accuracy: grayscale -> deskew ->
+    upscale (if small) -> contrast enhancement (CLAHE) -> denoise ->
+    sharpen -> adaptive threshold. Returns a NEW PIL Image; never mutates
+    the original, and callers should keep the raw image around as a
+    fallback in case the enhanced version happens to OCR worse on a
+    particular file.
+
+    Tuning notes (these specific changes target merged words / missing
+    spaces, which is the main accuracy complaint this pipeline had):
+      - Deskew runs first (see _deskew_image) since skew is a common root
+        cause of touching characters and inconsistent word gaps.
+      - Upscaling now uses a higher floor (1600px) and interpolates on the
+        already-deskewed image. Tesseract's LSTM engine generally does
+        better with more pixels per character; too-small text is a classic
+        cause of adjacent letters/words being read as one blob.
+      - The adaptive-threshold block size was reduced (31 -> 25) and C
+        raised slightly (11 -> 13). A large block size averages over a
+        wider neighbourhood, which on tightly kerned or small fonts can
+        bridge the gap between adjacent words into a single dark blob.
+        A smaller, more local block size keeps inter-word gaps intact.
+      - Denoising strength was reduced slightly (10 -> 7) since aggressive
+        denoising can blur/close small gaps between characters, which is
+        the opposite of what we want here.
     """
     import cv2
     import numpy as np
@@ -818,27 +881,33 @@ def _enhance_image_for_ocr(pil_img):
     cv_img = cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
 
-    # Upscale small images so OCR has more pixels to work with
+    # Straighten the page before anything else touches pixel spacing
+    gray = _deskew_image(gray)
+
+    # Upscale small images so OCR has more pixels per character to work with
     h, w = gray.shape[:2]
-    if max(h, w) < 1200:
-        scale = 1200 / max(h, w)
+    if max(h, w) < 1600:
+        scale = 1600 / max(h, w)
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
     # Contrast enhancement
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
 
-    # Denoise
-    gray = cv2.fastNlMeansDenoising(gray, h=10)
+    # Denoise (lighter than before — over-denoising can bridge small gaps
+    # between characters/words)
+    gray = cv2.fastNlMeansDenoising(gray, h=7)
 
     # Sharpen (unsharp mask)
     blurred = cv2.GaussianBlur(gray, (0, 0), sigmaX=3)
     sharpened = cv2.addWeighted(gray, 1.5, blurred, -0.5, 0)
 
-    # Adaptive threshold — helps OCR on uneven lighting / low contrast scans
+    # Adaptive threshold — helps OCR on uneven lighting / low contrast
+    # scans. Smaller block size than before to avoid merging tightly
+    # spaced words/characters into one dark region.
     thresh = cv2.adaptiveThreshold(
         sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 31, 11,
+        cv2.THRESH_BINARY, 25, 13,
     )
 
     return Image.fromarray(thresh)
@@ -989,6 +1058,187 @@ def analyse_qr(image_bytes: bytes) -> dict:
     except Exception as e:
         return {'error': f'QR analysis failed: {str(e)}'}
 
+# ─── Tesseract configuration + OCR quality scoring ──────────────────────────
+# --oem 3 = default LSTM + legacy engine combined (most accurate, tried
+#           first for everything in this pipeline)
+# --psm 6 = "assume a single uniform block of text" — the best default for
+#           screenshots, phone-camera photos of a message/document, and
+#           single-column scans, which is the overwhelming majority of
+#           CyberLens input. This is the #1 fix for the "words merged
+#           together" symptom: the default PSM (3) does full page-layout
+#           analysis and on a simple block of text it can mis-detect
+#           column/paragraph boundaries and run words together, whereas
+#           PSM 6 treats it as one block and preserves word gaps read
+#           line-by-line.
+# --psm 4 = single column of text of variable sizes — good for documents
+#           with clear paragraph/heading structure
+# --psm 3 = fully automatic page segmentation (no OSD) — safest generic
+#           fallback for scanned pages with mixed layout (multi-column,
+#           tables, embedded images)
+# --psm 11 = sparse text, no particular order — last-resort fallback for
+#           scattered/short text (banners, IDs, signage-style screenshots)
+#
+# `preserve_interword_spaces=1` is critical for requirement #2 (preserve
+# spaces between words): without it, Tesseract's internal space-collapsing
+# heuristic can drop legitimate spaces in some layouts.
+_TESS_CONFIG_ATTEMPTS = [
+    ('block',  6, 3),
+    ('auto',   3, 3),
+    ('sparse', 11, 3),
+]
+
+
+def _tesseract_config(psm: int, oem: int) -> str:
+    return f'--oem {oem} --psm {psm} -c preserve_interword_spaces=1'
+
+
+def _ocr_quality_score(text: str) -> float:
+    """
+    Heuristic score (higher = better) used to pick the best result among
+    several preprocessing/--psm attempts, without needing ground truth.
+
+    Rewards a healthy ratio of alphabetic content and typical English word
+    lengths; penalises the two failure signatures we care about most:
+      - merged words -> very few, abnormally long "words"
+      - shredded/noisy output -> lots of 1-2 character fragments
+    """
+    words = text.split()
+    if not words:
+        return -1.0
+
+    total_chars = max(len(text), 1)
+    alpha_ratio = sum(c.isalpha() for c in text) / total_chars
+    lengths = [len(w) for w in words]
+    avg_len = sum(lengths) / len(lengths)
+    long_word_ratio = sum(1 for l in lengths if l > 15) / len(words)
+    tiny_word_ratio = sum(1 for l in lengths if l == 1) / len(words)
+
+    score  = alpha_ratio * 10
+    score -= long_word_ratio * 8      # signature of merged words
+    score -= tiny_word_ratio * 3      # signature of shredded/garbled text
+    score -= abs(avg_len - 5.0) * 0.3  # typical English avg word length ~4.7
+    score += min(len(words), 200) * 0.01  # mild reward for recovering more text
+    return score
+
+
+def _ocr_best_of(pil_img, quick: bool = False) -> str:
+    """
+    Run Tesseract with a small number of --psm/--oem combinations against
+    the SAME preprocessed image and keep whichever result scores best on
+    _ocr_quality_score(). This directly implements requirement #6 (use the
+    best --psm/--oem) automatically instead of hard-coding one config that
+    only suits some documents/screenshots.
+
+    quick=True (used for PDF pages that already look fine, or the 600 DPI
+    escalation) only tries the single best-default config (`block`, psm 6)
+    to bound the extra runtime — see requirement #9 (accuracy without a
+    large speed hit). Full mode tries all 3 and stops early once a config
+    already scores comfortably well, so easy images still only cost one
+    Tesseract call in practice.
+    """
+    import pytesseract
+
+    attempts = _TESS_CONFIG_ATTEMPTS[:1] if quick else _TESS_CONFIG_ATTEMPTS
+    best_text, best_score = '', float('-inf')
+
+    for _, psm, oem in attempts:
+        try:
+            text = pytesseract.image_to_string(pil_img, config=_tesseract_config(psm, oem)).strip()
+        except Exception:
+            continue
+        score = _ocr_quality_score(text)
+        if score > best_score:
+            best_text, best_score = text, score
+        if best_score > 6.0:   # already good — skip the remaining configs
+            break
+
+    return best_text
+
+
+def _split_merged_words(text: str, min_len: int = 12) -> str:
+    """
+    Optional best-effort pass using the `wordninja` library (dictionary-
+    based word segmentation) to break up runs like "thestudentwashappy"
+    back into "the student was happy". This is the one step in the
+    pipeline that can occasionally mis-split a genuine long word or proper
+    noun, so it's applied ONLY to tokens that are purely alphabetic,
+    lowercase, and longer than `min_len` characters — short/mixed-case
+    tokens are left untouched to keep false positives rare.
+
+    Silently no-ops if wordninja isn't installed (`pip install wordninja`);
+    this is a nice-to-have layered on top of the config/preprocessing
+    fixes above, not a hard dependency.
+    """
+    try:
+        import wordninja
+    except ImportError:
+        return text
+
+    def _fix(match):
+        word = match.group(0)
+        if len(word) <= min_len or not word.islower():
+            return word
+        pieces = wordninja.split(word)
+        return ' '.join(pieces) if len(pieces) > 1 else word
+
+    try:
+        return re.sub(r'[a-z]+', _fix, text)
+    except Exception:
+        return text
+
+
+def _clean_ocr_text(text: str) -> str:
+    """
+    Normalise raw Tesseract output into clean, readable text
+    (requirement #5 — automatic OCR output cleanup):
+
+      1. Normalise line endings and strip stray control characters.
+      2. Rejoin words split by a line-wrap hyphen: "informa-\\ntion" ->
+         "information".
+      3. Rebuild paragraphs (requirement #3): split on blank lines, join
+         the wrapped lines *within* each paragraph into one continuous
+         line, then separate paragraphs from each other with a single
+         blank line. This turns Tesseract's raw "one physical line per
+         newline" output into actual paragraphs instead of either one
+         giant blob or a choppy line-per-newline mess.
+      4. Insert a space that Tesseract dropped at an obvious word boundary:
+         a lowercase letter immediately followed by a capital letter
+         ("...wordNextWord" -> "...word Next Word"), or a punctuation mark
+         immediately followed by a letter with no space ("end.Start" ->
+         "end. Start"). Deliberately conservative so it doesn't touch
+         genuine camelCase-like OCR noise or acronyms.
+      5. Collapse doubled/tripled spaces left over from the above.
+    """
+    if not text:
+        return text
+
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+
+    # Rejoin hyphenated line-wraps
+    text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)
+
+    # Rebuild paragraphs: join wrapped lines within a paragraph, keep
+    # blank-line-separated paragraphs as separate blocks
+    paragraphs = re.split(r'\n\s*\n', text)
+    cleaned_paragraphs = []
+    for para in paragraphs:
+        lines = [ln.strip() for ln in para.split('\n') if ln.strip()]
+        if lines:
+            cleaned_paragraphs.append(' '.join(lines))
+    text = '\n\n'.join(cleaned_paragraphs)
+
+    # Insert obviously-missing spaces at word/sentence boundaries
+    text = re.sub(r'([a-z])([A-Z][a-z])', r'\1 \2', text)
+    text = re.sub(r'([.!?,;:])([A-Za-z])', r'\1 \2', text)
+
+    # Collapse repeated horizontal whitespace (leave paragraph newlines alone)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r'[ \t]*\n[ \t]*', '\n', text)
+
+    return text.strip()
+
+
 def analyse_ocr_image(image_bytes: bytes) -> dict:
     try:
         import pytesseract
@@ -996,20 +1246,37 @@ def analyse_ocr_image(image_bytes: bytes) -> dict:
 
         pil_img = Image.open(io.BytesIO(image_bytes))
 
-        # ── Preprocess for accuracy: grayscale, contrast enhancement,
-        # sharpening, denoising, thresholding — then OCR the cleaned-up
-        # image. If that yields nothing (e.g. the enhancement doesn't suit
-        # this particular image), fall back to OCR on the raw image so no
-        # existing functionality is lost. ──
-        extracted = ''
+        # ── Preprocess for accuracy: deskew, grayscale, contrast
+        # enhancement, sharpening, denoising, thresholding — then OCR the
+        # cleaned-up image with several --psm/--oem configs and keep the
+        # best-scoring one (see _ocr_best_of / requirement #6). Also try
+        # the raw (unprocessed) image the same way and keep whichever of
+        # the two — enhanced or raw — scores better overall, since on rare
+        # images the enhancement can hurt more than it helps. ──
+        candidates = []
         try:
-            enhanced  = _enhance_image_for_ocr(pil_img)
-            extracted = pytesseract.image_to_string(enhanced).strip()
+            enhanced = _enhance_image_for_ocr(pil_img)
+            enhanced_text = _ocr_best_of(enhanced)
+            if enhanced_text:
+                candidates.append(enhanced_text)
         except Exception as _enh_err:
-            logger.warning("[OCR] Image preprocessing failed, falling back to raw image: %s", _enh_err)
+            logger.warning("[OCR] Image preprocessing failed: %s", _enh_err)
 
-        if not extracted:
-            extracted = pytesseract.image_to_string(pil_img).strip()
+        try:
+            raw_text = _ocr_best_of(pil_img)
+            if raw_text:
+                candidates.append(raw_text)
+        except Exception:
+            pass
+
+        if not candidates:
+            return {'error': 'No text could be extracted from this image. Ensure the image is clear and contains readable text.'}
+
+        extracted = max(candidates, key=_ocr_quality_score)
+
+        # ── Automatic cleanup (requirement #5) ──
+        extracted = _clean_ocr_text(extracted)
+        extracted = _split_merged_words(extracted)
 
         if not extracted:
             return {'error': 'No text could be extracted from this image. Ensure the image is clear and contains readable text.'}
@@ -1084,6 +1351,28 @@ def _render_pdf_page_at_dpi(pdf_bytes, page_index, dpi):
         return None
 
 
+def _page_text_is_weak(text: str, min_chars: int = 25, min_words: int = 5) -> bool:
+    """
+    Decide whether a PDF page's embedded text layer counts as genuinely
+    "searchable" (requirement #8: extract directly, skip OCR) or should be
+    treated as scanned/image-only (requirement #7: OCR it).
+
+    A page is "weak" (-> OCR it) if it has no text layer at all, or if the
+    text layer is so sparse (a handful of characters/words) that it's
+    almost certainly a stray watermark, page number, or extraction
+    artifact rather than the page's real body text — the previous check
+    (`pt and pt.strip()`) treated even a couple of stray characters as
+    "this page is searchable," which under-triggered OCR on pages that
+    were actually scanned images with a tiny bit of leaked text metadata.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    alnum_chars = sum(c.isalnum() for c in stripped)
+    words = stripped.split()
+    return alnum_chars < min_chars or len(words) < min_words
+
+
 def analyse_pdf(pdf_bytes: bytes) -> dict:
     try:
         import pdfplumber
@@ -1096,7 +1385,9 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
             page_count = len(pdf.pages)
             for idx, page in enumerate(pdf.pages):
                 pt = page.extract_text()
-                if pt and pt.strip():
+                if not _page_text_is_weak(pt):
+                    # Searchable page — use the direct text layer as-is
+                    # (requirement #8), no OCR needed for this page at all.
                     text_pages.append(pt)
                 else:
                     weak_pages.append(idx)
@@ -1127,29 +1418,39 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
 
                 ocr_chunks = []
                 for i, img in enumerate(page_images):
-                    # ── OCR pages with weak/no text layer ──
+                    # ── OCR pages with weak/no text layer (requirement #7:
+                    # scanned pages get OCR'd; searchable pages never reach
+                    # here at all since they weren't added to weak_pages) ──
                     if (i in weak_pages or not full_text.strip()) and sum(len(c) for c in ocr_chunks) < 3000:
                         page_ocr_text = ''
                         try:
                             enhanced = _enhance_image_for_ocr(img)
-                            page_ocr_text = pytesseract.image_to_string(enhanced).strip()
+                            # quick=True: one well-chosen config (psm 6) per
+                            # page keeps the per-page cost roughly the same
+                            # as before, instead of trying all 3 configs on
+                            # every page of a large PDF (requirement #9).
+                            page_ocr_text = _ocr_best_of(enhanced, quick=True)
                         except Exception:
                             pass
 
-                        # Escalate to 600 DPI if the 300 DPI pass barely got anything
+                        # Escalate to 600 DPI + the full auto-config search
+                        # only if the 300 DPI pass barely got anything —
+                        # this is where the extra accuracy is worth the
+                        # extra cost, since it only fires on genuinely hard
+                        # pages rather than every page.
                         if len(page_ocr_text) < 30:
                             hi_res_img = _render_pdf_page_at_dpi(pdf_bytes, i, dpi=600)
                             if hi_res_img is not None:
                                 try:
                                     enhanced_hi = _enhance_image_for_ocr(hi_res_img)
-                                    hi_text = pytesseract.image_to_string(enhanced_hi).strip()
+                                    hi_text = _ocr_best_of(enhanced_hi)
                                     if len(hi_text) > len(page_ocr_text):
                                         page_ocr_text = hi_text
                                 except Exception:
                                     pass
 
                         if page_ocr_text:
-                            ocr_chunks.append(page_ocr_text)
+                            ocr_chunks.append(_clean_ocr_text(page_ocr_text))
                             ocr_added = True
 
                     # ── Scan this page for QR codes ──
@@ -1167,7 +1468,7 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
                         pass
 
                 if ocr_chunks:
-                    full_text = (full_text + '\n' + '\n'.join(ocr_chunks)).strip()[:3000]
+                    full_text = (full_text + '\n\n' + '\n\n'.join(ocr_chunks)).strip()[:3000]
         except Exception as e:
             logger.warning("[PDF] High-res OCR/QR pass failed: %s", e)
 
