@@ -80,7 +80,7 @@ def analyse_text(text: str) -> dict:
 
     ml_result    = ml_predict(analysis_text)
     ml_scam_prob = ml_result['probability']
-
+    print("ML Scam Probability:", ml_scam_prob)
     kw_translated = score_keywords(analysis_text)
     kw_original   = score_keywords(lang_result['original_text'])
     kw_result     = kw_translated if kw_translated['score'] >= kw_original['score'] else kw_original
@@ -96,7 +96,7 @@ def analyse_text(text: str) -> dict:
 
     blended = (ml_scam_prob * 100 * ml_weight) + (kw_norm * kw_weight)
     blended = min(round(blended, 1), 100.0)
-    
+
     # Zero-floor for completely safe text
     ML_SAFE_THRESHOLD = 15.0
 
