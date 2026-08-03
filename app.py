@@ -585,12 +585,6 @@ def render_full_result(result: dict) -> None:
     <span class="dr-label" style="margin-bottom:.4rem">Extracted Website Text</span>
     <div style="color:#c8d8e8;font-size:.82rem;line-height:1.65">{_text_block}</div>
   </div>
-  <div class="data-row"><span class="dr-icon">🔑</span>
-    <span class="dr-label">Text Keyword Score</span>
-    <span class="dr-val">{_kw_score}</span></div>
-  <div class="data-row"><span class="dr-icon">🧠</span>
-    <span class="dr-label">Text ML Result</span>
-    <span class="dr-val" style="text-transform:capitalize">{_text_ml_label} ({_text_ml_prob}%)</span></div>
   <div class="data-row"><span class="dr-icon">📊</span>
     <span class="dr-label">Final Combined Score</span>
     <span class="dr-val" style="color:{color};font-weight:700">{round(_final_combined)}/100</span></div>
