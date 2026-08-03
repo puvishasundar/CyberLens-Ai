@@ -34,6 +34,9 @@ from utils import (
 from ml_model import predict as ml_predict, get_feature_importance
 from url_model import predict_url as url_ml_predict, get_feature_importance_url
 from language_utils import detect_and_translate
+from trusted_companies import (
+    match_trusted_domain, detect_brand_impersonation, company_name_matches_brand,
+)
 
 _RECS = {
     'CRITICAL': [
@@ -843,6 +846,40 @@ def analyse_url_full(url: str) -> dict:
     final_score = max(min(rs + content_bonus + ml_bonus + text_ml_bonus, 100), false_safe_floor)
     final_ri    = compute_risk_level(final_score)
 
+    # ── Trusted-domain override / impersonation escalation ──────────────
+    # Generic lexical/keyword models (suspicious words like "login",
+    # "verify", "account", "security"; or a text-ML pass over a page that
+    # legitimately talks about account security) will always fire on the
+    # normal, expected content of major tech companies' own sites. Rather
+    # than trying to hand-tune keyword weights per-domain, we check the
+    # resolved domain against a small, curated allowlist of verified
+    # official domains (trusted_companies.py) and correct the score:
+    #   - exact/official domain (or subdomain of one)  -> cap the score low
+    #   - contains a brand name but ISN'T that domain   -> push score high
+    # A hard-suspension signal (shortener_warning_detected) still wins,
+    # since even an official domain can be reported for abuse.
+    website_domain = base.get('domain', '') or ''
+    trusted_brand = None if shortener_warning_detected else match_trusted_domain(website_domain)
+    impersonation_brand = None if trusted_brand else detect_brand_impersonation(website_domain)
+
+    TRUST_CEILING = 12.0
+    IMPERSONATION_FLOOR = 75.0
+
+    if trusted_brand:
+        if final_score > TRUST_CEILING:
+            indicators.append(
+                f"Domain verified as an official {trusted_brand.title()} domain (trusted-domain registry)"
+            )
+        final_score = min(final_score, TRUST_CEILING)
+        final_ri = compute_risk_level(final_score)
+    elif impersonation_brand:
+        indicators.append(
+            f"⚠ Domain contains the '{impersonation_brand.title()}' brand name but is NOT its official "
+            f"domain — likely impersonation/lookalike site"
+        )
+        final_score = max(final_score, IMPERSONATION_FLOOR)
+        final_ri = compute_risk_level(final_score)
+
     indicators = list(dict.fromkeys(indicators))
 
     # ── Explanation bullets ──────────────────────────────────────────────
@@ -852,6 +889,12 @@ def analyse_url_full(url: str) -> dict:
     # indicators" when the computed score doesn't reflect that.
     explanation_bullets = []
 
+    if trusted_brand:
+        explanation_bullets.append(f"✓ Verified official {trusted_brand.title()} domain (trusted-domain registry)")
+    if impersonation_brand:
+        explanation_bullets.append(
+            f"⚠ Mimics {impersonation_brand.title()} branding but is not an official {impersonation_brand.title()} domain"
+        )
     if shortener_warning_detected:
         explanation_bullets.append("✓ URL officially suspended/blocked by the provider for abuse")
     if base['suspicious_kw'] or scam_phrases:
@@ -928,6 +971,10 @@ def analyse_url_full(url: str) -> dict:
         'fetch_note':        ml_fetch_note,
         'text_model_label':       content_result.get('text_model_label'),
         'text_model_probability': round(text_ml_prob * 100, 1),
+        'trusted_domain_check': {
+            'verified_brand':      trusted_brand,
+            'impersonation_brand': impersonation_brand,
+        },
         'debug_logs':      debug_logs,
     }
 
@@ -1774,11 +1821,43 @@ def analyse_company(name: str, email: str, website: str) -> dict:
     cross_bonus = 10 if fully_consistent else 0
     cross_score = max(0, min(100, cross_penalty - cross_bonus))
 
+    # ── Trusted-company cross-check ──────────────────────────────────────
+    # verify_company_identity() does pure name<->domain token matching,
+    # which is brittle for real corporate names ("Amazon.com, Inc.",
+    # "Alphabet Inc. (Google)", multi-word legal names, etc.) and has no
+    # concept of "this domain is *actually, verifiably* that company".
+    # Here we cross-check against the curated allowlist in
+    # trusted_companies.py: if the domain IS a verified official domain
+    # for a brand, AND the typed company name plausibly refers to that
+    # same brand (or no name was given to contradict it), we trust the
+    # match regardless of how the token-matching scored it. If the domain
+    # instead merely *mimics* a known brand, we escalate instead.
+    trusted_brand = match_trusted_domain(website_domain) if website_domain else None
+    impersonation_brand = None if trusted_brand else (
+        detect_brand_impersonation(website_domain) if website_domain else None
+    )
+    name_brand = company_name_matches_brand(name) if name else None
+    brand_verified = bool(trusted_brand and (not name_brand or name_brand == trusted_brand))
+
     # 3. Individual risk scores (0-100, higher = riskier)
     company_name_risk = min(len(identity_result.get('suspicious_terms', [])) * 20, 80)
     identity_mismatch_risk = (100 - identity_result.get('match_score', 0)) if website_domain else 0
     email_risk = email_result.get('email_risk_score', 0) if email_result else 0
     url_risk   = url_result.get('risk_score', 0) if url_result else 0
+
+    if brand_verified:
+        # Domain is confirmed genuine for this brand — a token-matching
+        # quirk (e.g. "Amazon.com, Inc." vs domain "amazon.com") shouldn't
+        # still read as an identity mismatch.
+        identity_mismatch_risk = 0
+        cross_score = 0
+    elif impersonation_brand:
+        # Domain name-drops a real brand without being its official
+        # domain — this is the impersonation case, so make sure identity
+        # mismatch and cross-verification reflect maximum suspicion
+        # rather than relying only on the URL pipeline to catch it.
+        identity_mismatch_risk = max(identity_mismatch_risk, 90)
+        cross_score = max(cross_score, 80)
 
     # 4. Weighted combination into a single risk score
     weighted_parts = []
@@ -1794,16 +1873,29 @@ def analyse_company(name: str, email: str, website: str) -> dict:
     risk_score = round(sum(s * w for s, w in weighted_parts) / total_weight, 1)
     risk_score = max(0.0, min(100.0, risk_score))
 
+    TRUST_CEILING = 10.0
+    IMPERSONATION_FLOOR = 80.0
+    if brand_verified:
+        risk_score = min(risk_score, TRUST_CEILING)
+    elif impersonation_brand:
+        risk_score = max(risk_score, IMPERSONATION_FLOOR)
+
     ri = compute_risk_level(risk_score)
     trust_score = max(0, round(100 - risk_score))
 
     # 5. Assemble flags / explanation bullets from every layer
     flags = []
+    if brand_verified:
+        flags.append(f"✓ Verified as the official {trusted_brand.title()} domain (trusted-domain registry)")
+    if impersonation_brand:
+        flags.append(
+            f"⚠ Domain mimics {impersonation_brand.title()} branding but is NOT its official domain — likely impersonation"
+        )
     if identity_result.get('suspicious_terms'):
         flags.append(
             f"Company name contains common fraud-recruitment phrasing: {', '.join(identity_result['suspicious_terms'][:3])}"
         )
-    if website_domain and not identity_result.get('name_matches_domain'):
+    if website_domain and not identity_result.get('name_matches_domain') and not brand_verified:
         flags.append(
             f'Company name "{name}" does not clearly match the website domain ("{website_domain}")' if name else
             'No company name provided to compare against the website'
@@ -1857,6 +1949,11 @@ def analyse_company(name: str, email: str, website: str) -> dict:
             'penalty':    cross_penalty,
             'bonus':      cross_bonus,
             'consistent': fully_consistent,
+        },
+        'trusted_domain_check': {
+            'verified_brand':      trusted_brand if brand_verified else None,
+            'impersonation_brand': impersonation_brand,
+            'brand_verified':      brand_verified,
         },
         'flags':            flags,
         'suspicious_kws':   flags[:8],
