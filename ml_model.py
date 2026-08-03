@@ -318,6 +318,9 @@ def predict(text: str) -> dict:
     else:
         blended_prob = round(0.50 * ml_prob + 0.50 * rule_score, 4)
 
+    label = "scam" if blended_prob >= threshold else "legitimate"
+    confidence = round(abs(blended_prob - 0.5) * 2.0, 4)
+
     # ── Fix confidence: distance from 0.5 scaled to 0–1 ─────────────────────────
     # Old: max(p, 1-p) gave 60% confidence for a 60% scam score (too low).
     # New: distance from centre × 2 gives full 0–100% range.
