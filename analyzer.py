@@ -1346,46 +1346,67 @@ _TESS_CONFIG_ATTEMPTS = [
 #   tesseract-ocr-mal
 #   tesseract-ocr-kan
 #   tesseract-ocr-spa
-# (tesseract-ocr-eng ships with the base tesseract-ocr package.) Without
-# these, pytesseract raises a TesseractError for the missing lang code —
-# _get_tesseract_lang() below detects that once per process and falls back
-# to 'eng' only, so the app degrades gracefully instead of breaking OCR
-# entirely.
+# (tesseract-ocr-eng ships with the base tesseract-ocr package.)
+#
+# _get_tesseract_lang() uses whichever of these packs are ACTUALLY
+# installed rather than an all-or-nothing check — with an all-or-nothing
+# check, installing 5 of 6 packs still silently gives you English-only OCR
+# (and if none of the requested extra languages are installed, Tesseract
+# doesn't error, it silently returns an EMPTY result for the whole page —
+# confirmed by testing directly against Tesseract 5.3.4). Using the
+# intersection of "wanted" and "installed" means partial deployments still
+# get partial multi-language support instead of none, and never sends a
+# language string Tesseract will refuse to honour.
 _TESSERACT_LANG_FULL = 'eng+tam+hin+tel+mal+kan+spa'
-_tesseract_lang_cache = {'lang': None}
+_TESSERACT_LANG_FAST = 'eng'   # cheap first-pass probe language
+_tesseract_lang_cache = {'lang': None, 'missing': None}
 
 
-def _get_tesseract_lang(pil_img=None) -> str:
+def _get_tesseract_lang() -> str:
     """
-    Return the multi-language string to pass to Tesseract, verifying once
-    per process that the full language pack is actually installed. Falls
-    back to 'eng' if any of the traineddata files are missing, so a
-    deployment that hasn't added packages.txt yet keeps working (just
-    without non-Latin OCR) instead of raising on every call.
+    Return the Tesseract lang string built from the intersection of
+    _TESSERACT_LANG_FULL and whatever traineddata is actually installed
+    (checked once per process via pytesseract.get_languages(), then
+    cached). Always includes 'eng'. Logs which requested languages are
+    missing so a partial/incomplete packages.txt is diagnosable from
+    server logs, and also exposes the missing set via
+    _tesseract_lang_missing() so callers can surface it to the user
+    instead of it only living in logs.
     """
     if _tesseract_lang_cache['lang'] is not None:
         return _tesseract_lang_cache['lang']
 
     import pytesseract
+    wanted = set(_TESSERACT_LANG_FULL.split('+'))
     try:
         installed = set(pytesseract.get_languages(config=''))
-        wanted = set(_TESSERACT_LANG_FULL.split('+'))
-        if wanted.issubset(installed):
-            _tesseract_lang_cache['lang'] = _TESSERACT_LANG_FULL
-        else:
-            missing = wanted - installed
-            logger.warning(
-                "[OCR] Missing Tesseract traineddata for: %s — "
-                "falling back to English-only OCR. See packages.txt "
-                "requirements in analyzer.py.", ', '.join(sorted(missing))
-            )
-            _tesseract_lang_cache['lang'] = 'eng'
     except Exception as e:
         logger.warning("[OCR] Could not query installed Tesseract languages (%s); "
                         "defaulting to English-only OCR.", e)
-        _tesseract_lang_cache['lang'] = 'eng'
+        installed = {'eng'}
 
+    usable = wanted & installed
+    usable.add('eng')  # always include English regardless of intersection result
+    missing = sorted(wanted - installed)
+
+    if missing:
+        logger.warning(
+            "[OCR] Missing Tesseract traineddata for: %s — those languages "
+            "won't be OCR'd until packages.txt is deployed with them. "
+            "Currently OCR-ready languages: %s",
+            ', '.join(missing), '+'.join(sorted(usable))
+        )
+
+    _tesseract_lang_cache['lang'] = '+'.join(sorted(usable))
+    _tesseract_lang_cache['missing'] = missing
     return _tesseract_lang_cache['lang']
+
+
+def _tesseract_lang_missing() -> list:
+    """Requested-but-not-installed language codes, populated by _get_tesseract_lang()."""
+    if _tesseract_lang_cache['missing'] is None:
+        _get_tesseract_lang()
+    return _tesseract_lang_cache['missing'] or []
 
 
 def _tesseract_config(psm: int, oem: int) -> str:
@@ -1469,61 +1490,97 @@ def _ocr_with_data(pil_img, psm: int, oem: int, lang: str):
 
 def _ocr_best_of(pil_img, quick: bool = False):
     """
-    Run Tesseract with a small number of --psm/--oem combinations against
-    the SAME preprocessed image and keep whichever result is best.
+    Run Tesseract and keep the best-scoring result, using a two-tier
+    language strategy so most documents stay fast:
 
-    Selection now combines two signals instead of the heuristic alone
-    (requirement: confidence-driven selection):
+      Tier 1 (always): a single fast probe with English-only ('eng').
+      Most images/pages are plain English/Latin-script documents, and
+      multi-language Tesseract calls are measurably slower than
+      single-language ones (~3x slower with 3 languages loaded,
+      confirmed by direct timing) — so paying that cost on every image
+      regardless of content was the main source of the slowdown.
+
+      Tier 2 (only if Tier 1 looks weak): escalate to the combined
+      multi-language string from _get_tesseract_lang() — this is where
+      non-Latin script (Tamil/Hindi/Telugu/Malayalam/Kannada) or Spanish
+      actually gets recognised. "Weak" means low confidence, a low
+      heuristic score, or literally no text — the signature of either a
+      hard image or non-English content, both of which justify the
+      extra cost. If no extra language packs are installed, Tier 2 is
+      skipped entirely (it would just repeat Tier 1's language for no
+      gain).
+
+    Selection within each tier blends two signals:
       - Tesseract's own mean per-word confidence from image_to_data()
-        (more reliable than text-shape heuristics, especially now that
-        OCR may run across multiple languages at once), and
-      - the existing _ocr_quality_score() heuristic, kept as a tie-
-        breaker / sanity check since confidence alone can be fooled by a
-        confidently-wrong low-PSM misread.
-
-    OCR is run with the combined multi-language string from
-    _get_tesseract_lang() so a single pass can read mixed-script text.
+        (more reliable than text-shape heuristics alone), and
+      - the existing _ocr_quality_score() heuristic, as a tie-breaker
+        since confidence alone can be fooled by a confidently-wrong
+        low-PSM misread.
 
     quick=True (used for PDF pages that already look fine, or the 600 DPI
-    escalation) only tries the single best-default config (`block`, psm 6)
-    to bound the extra runtime. Full mode tries all 3 and stops early once
-    a config already scores comfortably well on BOTH signals, so easy
-    images still only cost one Tesseract call in practice.
+    escalation) only tries the single best-default config (`block`,
+    psm 6) per tier, to bound the extra runtime. Full mode tries all 3
+    per tier and stops early once a config already scores comfortably
+    well on both signals, so easy images still only cost one Tesseract
+    call in practice.
 
     Returns (text, mean_confidence) — mean_confidence is -1.0 if nothing
-    was recognised. Kept as a tuple (rather than changing to a dict) to
-    keep call sites simple; existing callers that only used the text
-    should unpack index [0].
+    was recognised.
     """
-    lang = _get_tesseract_lang()
     attempts = _TESS_CONFIG_ATTEMPTS[:1] if quick else _TESS_CONFIG_ATTEMPTS
 
-    best_text, best_conf, best_score = '', -1.0, float('-inf')
-    best_combined = float('-inf')
+    def _run(lang, cfg_attempts):
+        text, conf, combined = '', -1.0, float('-inf')
+        for _, psm, oem in cfg_attempts:
+            try:
+                t, c, _data = _ocr_with_data(pil_img, psm, oem, lang)
+            except Exception:
+                continue
+            if not t:
+                continue
+            score = _ocr_quality_score(t)
+            # Normalise confidence (0-100) onto roughly the same scale as
+            # the heuristic score (~ -8..+12) so neither signal dominates
+            # by accident, then blend: confidence carries slightly more
+            # weight since it reflects Tesseract's own certainty about
+            # the specific characters recognised, not just output shape.
+            comb = (c / 100.0) * 12.0 * 0.6 + score * 0.4
+            if comb > combined:
+                text, conf, combined = t, c, comb
+            if c > 80.0 and score > 6.0:   # already good on both signals
+                break
+        return text, conf, combined
 
-    for _, psm, oem in attempts:
-        try:
-            text, conf, _data = _ocr_with_data(pil_img, psm, oem, lang)
-        except Exception:
-            continue
-        if not text:
-            continue
+    # ── Tier 1: fast English-only probe ──
+    fast_text, fast_conf, fast_combined = _run(_TESSERACT_LANG_FAST, attempts[:1])
 
-        score = _ocr_quality_score(text)
-        # Normalise confidence (0-100) onto roughly the same scale as the
-        # heuristic score (~ -8..+12) so neither signal dominates by
-        # accident, then blend: confidence carries slightly more weight
-        # since it reflects Tesseract's own certainty about the specific
-        # characters recognised, not just the shape of the output.
-        combined = (conf / 100.0) * 12.0 * 0.6 + score * 0.4
+    fast_is_weak = (
+        not fast_text
+        or fast_conf < 60.0
+        or _ocr_quality_score(fast_text) < 4.0
+    )
 
-        if combined > best_combined:
-            best_text, best_conf, best_score, best_combined = text, conf, score, combined
+    full_lang = _get_tesseract_lang()
+    other_langs_available = full_lang != _TESSERACT_LANG_FAST
 
-        if best_conf > 80.0 and best_score > 6.0:   # already good on both signals — stop early
-            break
+    if fast_is_weak and other_langs_available:
+        # ── Tier 2: escalate to the multi-language pass ──
+        full_text, full_conf, full_combined = _run(full_lang, attempts)
+        if full_combined > fast_combined:
+            return full_text, full_conf
+        return fast_text, fast_conf
 
-    return best_text, best_conf
+    if not quick and fast_combined < 6.0 and len(attempts) > 1:
+        # Fast pass wasn't great but doesn't look non-English either
+        # (already checked above) and other language packs aren't the
+        # answer — try the remaining psm configs in English before
+        # giving up, preserving the old "try all 3 configs" behaviour
+        # for genuinely hard-but-English images.
+        rest_text, rest_conf, rest_combined = _run(_TESSERACT_LANG_FAST, attempts[1:])
+        if rest_combined > fast_combined:
+            return rest_text, rest_conf
+
+    return fast_text, fast_conf
 
 
 def _split_merged_words(text: str, min_len: int = 12) -> str:
@@ -1672,6 +1729,9 @@ def analyse_ocr_image(image_bytes: bytes) -> dict:
         analysis['char_count']        = len(extracted)
         analysis['word_count']        = len(extracted.split())
         analysis['scan_type']         = 'OCR Scanner'
+        missing_langs = _tesseract_lang_missing()
+        if missing_langs:
+            analysis['ocr_languages_unavailable'] = missing_langs
         analysis['ocr_confidence']    = round(extracted_conf, 1)
         # Per-line language tags (additive) — mixed-script images now get a
         # language tag per line instead of one whole-document guess.
@@ -1934,6 +1994,9 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
         analysis['char_count']    = len(full_text)
         analysis['preview_text']  = full_text[:500]
         analysis['scan_type']     = 'PDF Scanner'
+        missing_langs = _tesseract_lang_missing()
+        if missing_langs and ocr_added:
+            analysis['ocr_languages_unavailable'] = missing_langs
         analysis['qr_codes']      = qr_codes
         analysis['ocr_applied']   = ocr_added
         analysis['language_segments'] = page_lang_segments if ocr_added else []
