@@ -1721,7 +1721,8 @@ elif selected == "Analyzer":
             if "preview_text" in result:
                 st.write("")
                 section_header("Document Preview", "👁️")
-                H(f'<div class="text-preview">{result["preview_text"]}</div>')
+                _safe_preview = _html.escape(result["preview_text"])
+                H(f'<div class="text-preview">{_safe_preview}</div>')
                 H(f'<div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;font-family:var(--font-mono)">'
                   f'{result.get("word_count",0)} words analysed</div>')
             log_scan(result, "PDF Scanner")
