@@ -33,7 +33,7 @@ from utils import (
 )
 from ml_model import predict as ml_predict, get_feature_importance
 from url_model import predict_url as url_ml_predict, get_feature_importance_url
-from language_utils import detect_and_translate
+from language_utils import detect_and_translate, tag_segments
 from trusted_companies import (
     match_trusted_domain, detect_brand_impersonation, company_name_matches_brand,
 )
@@ -1121,9 +1121,13 @@ def _enhance_image_for_ocr(pil_img):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
 
-    # Denoise (lighter than before — over-denoising can bridge small gaps
-    # between characters/words)
-    gray = cv2.fastNlMeansDenoising(gray, h=7)
+    # Denoise — median blur removes speckle noise at a small fraction of
+    # the cost of fastNlMeansDenoising (which was the single biggest time
+    # sink in this pipeline: it's near-quadratic in image size and was
+    # running on every upscaled image/page, often taking several seconds
+    # by itself). A 3x3 median blur is nearly as effective for the kind
+    # of scan/photo noise we see here and is essentially instant.
+    gray = cv2.medianBlur(gray, 3)
 
     # Sharpen (unsharp mask)
     blurred = cv2.GaussianBlur(gray, (0, 0), sigmaX=3)
@@ -1192,6 +1196,20 @@ def _decode_qr_multi(cv_img):
     data = _try_opencv(cv_img, qr_detector)
     if data:
         return data, 'opencv'
+
+    # ── Cheap pre-check before the expensive thorough fallback: does this
+    # image even contain anything that looks like a QR finder pattern?
+    # detect() just localises candidate squares — it's far cheaper than
+    # the 24-attempt multi-scale/rotation decode loop below. If it finds
+    # nothing, there's almost certainly no QR code on this page, so skip
+    # straight to "not found" instead of burning time on every page of
+    # every PDF (this was the main source of the slowdown).
+    try:
+        found, _ = qr_detector.detect(cv_img)
+        if not found:
+            return '', ''
+    except Exception:
+        pass  # if the cheap check itself fails, fall through to thorough scan
 
     # ── Thorough fallback: multi-scale + multi-rotation, for rotated,
     # blurry, or low-contrast QR codes ──
@@ -1315,6 +1333,61 @@ _TESS_CONFIG_ATTEMPTS = [
 ]
 
 
+# Combined Tesseract language string so a single OCR pass can read mixed-
+# script images/PDF pages (English + the Indic languages + Spanish already
+# supported by language_utils.py) instead of only reading Latin script well.
+#
+# ⚠️ DEPLOYMENT REQUIREMENT: this requires the matching Tesseract
+# traineddata files to be installed on the server. On Streamlit Community
+# Cloud, add a packages.txt with:
+#   tesseract-ocr-tam
+#   tesseract-ocr-hin
+#   tesseract-ocr-tel
+#   tesseract-ocr-mal
+#   tesseract-ocr-kan
+#   tesseract-ocr-spa
+# (tesseract-ocr-eng ships with the base tesseract-ocr package.) Without
+# these, pytesseract raises a TesseractError for the missing lang code —
+# _get_tesseract_lang() below detects that once per process and falls back
+# to 'eng' only, so the app degrades gracefully instead of breaking OCR
+# entirely.
+_TESSERACT_LANG_FULL = 'eng+tam+hin+tel+mal+kan+spa'
+_tesseract_lang_cache = {'lang': None}
+
+
+def _get_tesseract_lang(pil_img=None) -> str:
+    """
+    Return the multi-language string to pass to Tesseract, verifying once
+    per process that the full language pack is actually installed. Falls
+    back to 'eng' if any of the traineddata files are missing, so a
+    deployment that hasn't added packages.txt yet keeps working (just
+    without non-Latin OCR) instead of raising on every call.
+    """
+    if _tesseract_lang_cache['lang'] is not None:
+        return _tesseract_lang_cache['lang']
+
+    import pytesseract
+    try:
+        installed = set(pytesseract.get_languages(config=''))
+        wanted = set(_TESSERACT_LANG_FULL.split('+'))
+        if wanted.issubset(installed):
+            _tesseract_lang_cache['lang'] = _TESSERACT_LANG_FULL
+        else:
+            missing = wanted - installed
+            logger.warning(
+                "[OCR] Missing Tesseract traineddata for: %s — "
+                "falling back to English-only OCR. See packages.txt "
+                "requirements in analyzer.py.", ', '.join(sorted(missing))
+            )
+            _tesseract_lang_cache['lang'] = 'eng'
+    except Exception as e:
+        logger.warning("[OCR] Could not query installed Tesseract languages (%s); "
+                        "defaulting to English-only OCR.", e)
+        _tesseract_lang_cache['lang'] = 'eng'
+
+    return _tesseract_lang_cache['lang']
+
+
 def _tesseract_config(psm: int, oem: int) -> str:
     return f'--oem {oem} --psm {psm} -c preserve_interword_spaces=1'
 
@@ -1348,38 +1421,109 @@ def _ocr_quality_score(text: str) -> float:
     return score
 
 
-def _ocr_best_of(pil_img, quick: bool = False) -> str:
+def _mean_word_confidence(ocr_data: dict) -> float:
+    """
+    Mean Tesseract per-word confidence (0-100) over words with conf > 0,
+    from image_to_data(output_type=Output.DICT). Returns -1.0 if there are
+    no confident words at all (e.g. blank/unreadable image), so it always
+    compares sensibly against other candidates.
+    """
+    confs = [float(c) for c in ocr_data.get('conf', []) if c not in (None, '', '-1') and float(c) > 0]
+    if not confs:
+        return -1.0
+    return sum(confs) / len(confs)
+
+
+def _ocr_with_data(pil_img, psm: int, oem: int, lang: str):
+    """
+    Run Tesseract once via image_to_data() (so we get per-word confidence
+    for free) and reconstruct the plain text from the word list. Returns
+    (text, mean_confidence, ocr_data_dict). ocr_data_dict is returned so
+    callers can optionally do per-line language tagging
+    (language_utils.tag_segments_from_ocr_data) without a second OCR call.
+    """
+    import pytesseract
+    from pytesseract import Output
+
+    config = _tesseract_config(psm, oem)
+    data = pytesseract.image_to_data(pil_img, lang=lang, config=config, output_type=Output.DICT)
+
+    # Rebuild text grouped by line so spacing/line breaks look like
+    # image_to_string's output (image_to_data gives one row per word).
+    lines = {}
+    order = []
+    n = len(data.get('text', []))
+    for i in range(n):
+        word = (data['text'][i] or '').strip()
+        if not word:
+            continue
+        key = (data['block_num'][i], data['par_num'][i], data['line_num'][i])
+        if key not in lines:
+            lines[key] = []
+            order.append(key)
+        lines[key].append(word)
+    text = '\n'.join(' '.join(lines[k]) for k in order).strip()
+
+    return text, _mean_word_confidence(data), data
+
+
+def _ocr_best_of(pil_img, quick: bool = False):
     """
     Run Tesseract with a small number of --psm/--oem combinations against
-    the SAME preprocessed image and keep whichever result scores best on
-    _ocr_quality_score(). This directly implements requirement #6 (use the
-    best --psm/--oem) automatically instead of hard-coding one config that
-    only suits some documents/screenshots.
+    the SAME preprocessed image and keep whichever result is best.
+
+    Selection now combines two signals instead of the heuristic alone
+    (requirement: confidence-driven selection):
+      - Tesseract's own mean per-word confidence from image_to_data()
+        (more reliable than text-shape heuristics, especially now that
+        OCR may run across multiple languages at once), and
+      - the existing _ocr_quality_score() heuristic, kept as a tie-
+        breaker / sanity check since confidence alone can be fooled by a
+        confidently-wrong low-PSM misread.
+
+    OCR is run with the combined multi-language string from
+    _get_tesseract_lang() so a single pass can read mixed-script text.
 
     quick=True (used for PDF pages that already look fine, or the 600 DPI
     escalation) only tries the single best-default config (`block`, psm 6)
-    to bound the extra runtime — see requirement #9 (accuracy without a
-    large speed hit). Full mode tries all 3 and stops early once a config
-    already scores comfortably well, so easy images still only cost one
-    Tesseract call in practice.
-    """
-    import pytesseract
+    to bound the extra runtime. Full mode tries all 3 and stops early once
+    a config already scores comfortably well on BOTH signals, so easy
+    images still only cost one Tesseract call in practice.
 
+    Returns (text, mean_confidence) — mean_confidence is -1.0 if nothing
+    was recognised. Kept as a tuple (rather than changing to a dict) to
+    keep call sites simple; existing callers that only used the text
+    should unpack index [0].
+    """
+    lang = _get_tesseract_lang()
     attempts = _TESS_CONFIG_ATTEMPTS[:1] if quick else _TESS_CONFIG_ATTEMPTS
-    best_text, best_score = '', float('-inf')
+
+    best_text, best_conf, best_score = '', -1.0, float('-inf')
+    best_combined = float('-inf')
 
     for _, psm, oem in attempts:
         try:
-            text = pytesseract.image_to_string(pil_img, config=_tesseract_config(psm, oem)).strip()
+            text, conf, _data = _ocr_with_data(pil_img, psm, oem, lang)
         except Exception:
             continue
+        if not text:
+            continue
+
         score = _ocr_quality_score(text)
-        if score > best_score:
-            best_text, best_score = text, score
-        if best_score > 6.0:   # already good — skip the remaining configs
+        # Normalise confidence (0-100) onto roughly the same scale as the
+        # heuristic score (~ -8..+12) so neither signal dominates by
+        # accident, then blend: confidence carries slightly more weight
+        # since it reflects Tesseract's own certainty about the specific
+        # characters recognised, not just the shape of the output.
+        combined = (conf / 100.0) * 12.0 * 0.6 + score * 0.4
+
+        if combined > best_combined:
+            best_text, best_conf, best_score, best_combined = text, conf, score, combined
+
+        if best_conf > 80.0 and best_score > 6.0:   # already good on both signals — stop early
             break
 
-    return best_text
+    return best_text, best_conf
 
 
 def _split_merged_words(text: str, min_len: int = 12) -> str:
@@ -1480,26 +1624,41 @@ def analyse_ocr_image(image_bytes: bytes) -> dict:
         # the raw (unprocessed) image the same way and keep whichever of
         # the two — enhanced or raw — scores better overall, since on rare
         # images the enhancement can hurt more than it helps. ──
-        candidates = []
+        candidates = []  # list of (text, mean_confidence)
         try:
             enhanced = _enhance_image_for_ocr(pil_img)
-            enhanced_text = _ocr_best_of(enhanced)
+            enhanced_text, enhanced_conf = _ocr_best_of(enhanced)
             if enhanced_text:
-                candidates.append(enhanced_text)
+                candidates.append((enhanced_text, enhanced_conf))
         except Exception as _enh_err:
             logger.warning("[OCR] Image preprocessing failed: %s", _enh_err)
 
-        try:
-            raw_text = _ocr_best_of(pil_img)
-            if raw_text:
-                candidates.append(raw_text)
-        except Exception:
-            pass
+        # Only pay for a second full OCR pass on the raw image if the
+        # enhanced result looks weak or is missing. "Weak" is now judged
+        # on Tesseract's own mean confidence first (more reliable,
+        # especially across multiple languages at once), falling back to
+        # the heuristic score if confidence is unavailable — on the large
+        # majority of images the enhanced pass alone is already good, so
+        # running a second (up to 3-config) OCR pass unconditionally here
+        # was doubling OCR time for little benefit.
+        if not candidates or candidates[0][1] < 55.0 or _ocr_quality_score(candidates[0][0]) < 6.0:
+            try:
+                raw_text, raw_conf = _ocr_best_of(pil_img)
+                if raw_text:
+                    candidates.append((raw_text, raw_conf))
+            except Exception:
+                pass
 
         if not candidates:
             return {'error': 'No text could be extracted from this image. Ensure the image is clear and contains readable text.'}
 
-        extracted = max(candidates, key=_ocr_quality_score)
+        # Pick the candidate with the best blended confidence+heuristic
+        # score (same blend used inside _ocr_best_of, kept consistent).
+        def _candidate_rank(c):
+            text, conf = c
+            return (conf / 100.0) * 12.0 * 0.6 + _ocr_quality_score(text) * 0.4
+
+        extracted, extracted_conf = max(candidates, key=_candidate_rank)
 
         # ── Automatic cleanup (requirement #5) ──
         extracted = _clean_ocr_text(extracted)
@@ -1509,10 +1668,17 @@ def analyse_ocr_image(image_bytes: bytes) -> dict:
             return {'error': 'No text could be extracted from this image. Ensure the image is clear and contains readable text.'}
 
         analysis = analyse_text(extracted)
-        analysis['extracted_text'] = extracted
-        analysis['char_count']     = len(extracted)
-        analysis['word_count']     = len(extracted.split())
-        analysis['scan_type']      = 'OCR Scanner'
+        analysis['extracted_text']    = extracted
+        analysis['char_count']        = len(extracted)
+        analysis['word_count']        = len(extracted.split())
+        analysis['scan_type']         = 'OCR Scanner'
+        analysis['ocr_confidence']    = round(extracted_conf, 1)
+        # Per-line language tags (additive) — mixed-script images now get a
+        # language tag per line instead of one whole-document guess.
+        try:
+            analysis['language_segments'] = tag_segments(extracted)
+        except Exception:
+            analysis['language_segments'] = []
         return analysis
 
     except ImportError as e:
@@ -1600,6 +1766,30 @@ def _page_text_is_weak(text: str, min_chars: int = 25, min_words: int = 5) -> bo
     return alnum_chars < min_chars or len(words) < min_words
 
 
+def _looks_column_jumbled(text: str) -> bool:
+    """
+    Cheap heuristic to flag pages where plain extract_text() likely
+    scrambled reading order (common on multi-column layouts and tables):
+    lots of very short, oddly-interleaved line fragments rather than
+    normal sentence-length lines. Used only to decide whether the heavier
+    layout-aware extract_text(layout=True) pass is worth trying — false
+    positives just cost one extra (still cheap, text-layer-only) call, so
+    this is intentionally biased toward "try it" over precision.
+    """
+    lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+    if len(lines) < 6:
+        return False  # too short a page for column-scrambling to matter
+
+    word_counts = [len(ln.split()) for ln in lines]
+    avg_words = sum(word_counts) / len(word_counts)
+    short_line_ratio = sum(1 for w in word_counts if w <= 2) / len(word_counts)
+
+    # Short-line-heavy AND low average words/line is the signature of
+    # column text extracted as narrow horizontal slices instead of
+    # reading order.
+    return short_line_ratio > 0.45 and avg_words < 4.0
+
+
 def analyse_pdf(pdf_bytes: bytes) -> dict:
     try:
         import pdfplumber
@@ -1612,6 +1802,20 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
             page_count = len(pdf.pages)
             for idx, page in enumerate(pdf.pages):
                 pt = page.extract_text()
+
+                # Layout-aware fallback: plain extract_text() can scramble
+                # reading order on multi-column pages/pages with tables.
+                # Only pay for the heavier layout-aware pass when the fast
+                # path looks jumbled, so normal single-column PDFs keep the
+                # original (fast) behaviour.
+                if pt and _looks_column_jumbled(pt):
+                    try:
+                        layout_pt = page.extract_text(layout=True)
+                        if layout_pt and not _page_text_is_weak(layout_pt):
+                            pt = layout_pt
+                    except Exception:
+                        pass
+
                 if not _page_text_is_weak(pt):
                     # Searchable page — use the direct text layer as-is
                     # (requirement #8), no OCR needed for this page at all.
@@ -1635,6 +1839,7 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
         # PyMuPDF isn't installed.
         qr_codes  = []
         ocr_added = False
+        page_lang_segments = []
         try:
             page_images = _render_pdf_pages_high_res(pdf_bytes, dpi=300)
 
@@ -1649,36 +1854,51 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
                     # scanned pages get OCR'd; searchable pages never reach
                     # here at all since they weren't added to weak_pages) ──
                     if (i in weak_pages or not full_text.strip()) and sum(len(c) for c in ocr_chunks) < 3000:
-                        page_ocr_text = ''
+                        page_ocr_text, page_ocr_conf = '', -1.0
                         try:
                             enhanced = _enhance_image_for_ocr(img)
                             # quick=True: one well-chosen config (psm 6) per
                             # page keeps the per-page cost roughly the same
                             # as before, instead of trying all 3 configs on
                             # every page of a large PDF (requirement #9).
-                            page_ocr_text = _ocr_best_of(enhanced, quick=True)
+                            page_ocr_text, page_ocr_conf = _ocr_best_of(enhanced, quick=True)
                         except Exception:
                             pass
 
                         # Escalate to 600 DPI + the full auto-config search
-                        # only if the 300 DPI pass barely got anything —
-                        # this is where the extra accuracy is worth the
-                        # extra cost, since it only fires on genuinely hard
-                        # pages rather than every page.
-                        if len(page_ocr_text) < 30:
+                        # only if the 300 DPI pass barely got anything OR
+                        # Tesseract itself wasn't confident in what it did
+                        # get — confidence catches cases where a full page
+                        # of low-quality text came back (length looks fine)
+                        # but Tesseract is guessing at most of it. This is
+                        # where the extra accuracy is worth the extra cost,
+                        # since it only fires on genuinely hard pages.
+                        if len(page_ocr_text) < 30 or page_ocr_conf < 45.0:
                             hi_res_img = _render_pdf_page_at_dpi(pdf_bytes, i, dpi=600)
                             if hi_res_img is not None:
                                 try:
                                     enhanced_hi = _enhance_image_for_ocr(hi_res_img)
-                                    hi_text = _ocr_best_of(enhanced_hi)
-                                    if len(hi_text) > len(page_ocr_text):
-                                        page_ocr_text = hi_text
+                                    hi_text, hi_conf = _ocr_best_of(enhanced_hi)
+                                    # Prefer the 600 DPI pass if it's either
+                                    # longer or Tesseract is more confident
+                                    # in it, not just longer (a longer but
+                                    # low-confidence result isn't actually
+                                    # better).
+                                    if hi_text and (len(hi_text) > len(page_ocr_text) or hi_conf > page_ocr_conf):
+                                        page_ocr_text, page_ocr_conf = hi_text, hi_conf
                                 except Exception:
                                     pass
 
                         if page_ocr_text:
-                            ocr_chunks.append(_clean_ocr_text(page_ocr_text))
+                            cleaned_page_text = _clean_ocr_text(page_ocr_text)
+                            ocr_chunks.append(cleaned_page_text)
                             ocr_added = True
+                            try:
+                                for seg in tag_segments(cleaned_page_text):
+                                    seg['page'] = i + 1
+                                    page_lang_segments.append(seg)
+                            except Exception:
+                                pass
 
                     # ── Scan this page for QR codes ──
                     try:
@@ -1716,6 +1936,7 @@ def analyse_pdf(pdf_bytes: bytes) -> dict:
         analysis['scan_type']     = 'PDF Scanner'
         analysis['qr_codes']      = qr_codes
         analysis['ocr_applied']   = ocr_added
+        analysis['language_segments'] = page_lang_segments if ocr_added else []
         return analysis
 
     except ImportError:

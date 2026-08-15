@@ -256,6 +256,87 @@ def detect_and_translate(text: str) -> dict:
     }
 
 
+# ─── Per-line / per-segment language tagging ───────────────────────────────────
+# Additive: does NOT change the shape of detect_and_translate(). This is for
+# mixed-script pages/images where a single whole-document guess is wrong for
+# some lines (e.g. an English heading over a Tamil paragraph).
+
+def tag_segments(text: str) -> list[dict]:
+    """
+    Split *text* into lines and run the same _script_detect() heuristic on
+    each line independently.
+
+    Returns a list of:
+        {
+          'text':      str,   # the line, stripped
+          'lang_code': str,   # e.g. 'ta', 'en', 'unknown'
+          'lang_name': str,   # e.g. 'Tamil'
+        }
+
+    Blank lines are skipped. Lines with no dominant Indic script fall back
+    to the same Latin-heuristic used in detect_language() (Spanish-marker
+    check, else English, else 'unknown') so short lines still get a
+    reasonable tag without paying for langdetect per line.
+    """
+    segments = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        code = _script_detect(line)
+        if code is None:
+            if _is_mostly_latin(line):
+                es_markers = ['de ', 'la ', 'el ', 'en ', 'que ', 'con ', 'para ', 'por ', 'los ', 'las ']
+                es_hits = sum(1 for m in es_markers if m in line.lower())
+                code = 'es' if es_hits >= 2 else 'en'
+            else:
+                code = 'unknown'
+
+        meta = SUPPORTED_LANGUAGES.get(code, {})
+        segments.append({
+            'text':      line,
+            'lang_code': code,
+            'lang_name': meta.get('name', 'Unknown' if code == 'unknown' else code.upper()),
+        })
+
+    return segments
+
+
+def tag_segments_from_ocr_data(ocr_data: dict) -> list[dict]:
+    """
+    Same as tag_segments(), but groups pytesseract's image_to_data()
+    output (Output.DICT) by (block_num, par_num, line_num) so segments
+    align with actual visual lines/regions on the page instead of just
+    splitting on '\\n' — more reliable when a line wraps oddly or when
+    OCR merges/splits lines unexpectedly.
+
+    *ocr_data* is the dict returned by:
+        pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, ...)
+
+    Returns the same shape as tag_segments(): [{'text','lang_code','lang_name'}, ...]
+    Callers should pass whatever config/lang they used for OCR; this function
+    only regroups + re-tags, it doesn't call Tesseract itself.
+    """
+    n = len(ocr_data.get('text', []))
+    lines = {}
+    order = []
+    for i in range(n):
+        word = (ocr_data['text'][i] or '').strip()
+        if not word:
+            continue
+        key = (ocr_data.get('block_num', [0]*n)[i],
+               ocr_data.get('par_num', [0]*n)[i],
+               ocr_data.get('line_num', [0]*n)[i])
+        if key not in lines:
+            lines[key] = []
+            order.append(key)
+        lines[key].append(word)
+
+    joined = '\n'.join(' '.join(lines[k]) for k in order)
+    return tag_segments(joined)
+
+
 # ─── Language Badge HTML ───────────────────────────────────────────────────────
 # NOTE: Only uses div/span/strong — tags Streamlit's markdown renderer allows.
 # <details>, <summary>, and most block-level tags are stripped by Streamlit.
