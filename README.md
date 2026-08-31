@@ -7,7 +7,7 @@
 
 ## 🛡️ What Is CyberLens AI?
 
-CyberLens AI is a **real-time AI-powered cybersecurity intelligence platform** built to protect everyday users — especially job seekers and students — from online scams, phishing attacks, and digital fraud. It combines machine learning, natural language processing (NLP), heuristic rule engines, and computer vision into a single, beautifully designed web dashboard.
+CyberLens AI is a **real-time AI-powered cybersecurity intelligence platform** built to protect everyday users — especially job seekers and students — from online scams, phishing attacks, and digital fraud. It combines machine learning, natural language processing (NLP), heuristic rule engines, and computer vision into a single web-based security dashboard.
 
 The core mission is simple: **detect digital threats before victims are harmed.** Whether the threat arrives as a suspicious WhatsApp message, a fake job offer email, a malicious URL, a fraudulent QR code, or a scam-laced PDF — CyberLens AI can scan and score it in seconds.
 
@@ -18,306 +18,1249 @@ The core mission is simple: **detect digital threats before victims are harmed.*
 The UI has a premium **dark cyberpunk / threat-intelligence aesthetic**, inspired by real-world security dashboards and SIEM tools.
 
 ### Design Identity
-- **Color palette:** Deep space navy background (`#020409`), electric cyan primary (`#00d4ff`), neon green safe (`#00ff9d`), threat red (`#ff3366`), warning amber (`#ffb340`), purple accent (`#7c3aed`)
-- **Typography:** Three distinct font roles — `Orbitron` (display/scores), `Rajdhani` (headings/labels), `JetBrains Mono` (data/monospace content), plus `Inter` for body text
-- **Background Effect:** An animated Matrix-style canvas (`<canvas id="cl-matrix">`) renders scrolling columns of cyan characters — Latin digits, Japanese katakana, and cybersecurity symbols — at 6% opacity, creating a live "active system" atmosphere without distracting from content
-- **Glass morphism cards:** All result cards use `rgba(255,255,255,0.025)` backgrounds with subtle borders and glowing `box-shadow` effects
-- **Animations:** Every result card fades in on appearance (`resultFadeIn`), badges slide in from the left (`badgeIn`), and metric cells pop up with staggered delays (`metaIn`). Threat levels have continuous pulse animations (e.g. `pulseCritical` at 1.5s for urgent red glow)
+
+* **Color palette:** Deep space navy background (`#020409`), electric cyan primary (`#00d4ff`), neon green safe (`#00ff9d`), threat red (`#ff3366`), warning amber (`#ffb340`), purple accent (`#7c3aed`)
+* **Typography:** Three distinct font roles — `Orbitron` for display and scores, `Rajdhani` for headings and labels, `JetBrains Mono` for data and monospace content, plus `Inter` for body text
+* **Background Effect:** An animated Matrix-style canvas (`<canvas id="cl-matrix">`) renders scrolling columns of cyan characters — Latin digits, Japanese katakana, and cybersecurity symbols — at low opacity, creating a live "active system" atmosphere without distracting from the content
+* **Glass morphism cards:** Result cards use translucent backgrounds with subtle borders and glowing effects
+* **Animations:** Result cards fade in on appearance, badges slide in from the left, and metric cells appear with staggered delays. Threat levels also use pulse animations for urgent results
 
 ### Top Bar
-A fixed header renders via an embedded HTML `<iframe>` component with:
-- **Brand logo:** Animated pulsing shield icon with gradient border
-- **Live ticker:** A scrolling marquee showing real-time session stats — total scans, threats found, ML engine status, and a live alert ("Fake job scams rising 340% — Stay vigilant")
-- **Status pill:** A green "SYSTEMS ONLINE" badge with a pulsing dot
+
+A fixed header renders through an embedded HTML component with:
+
+* **Brand logo:** Animated pulsing shield icon with gradient border
+* **Live ticker:** A scrolling marquee showing real-time session statistics, ML engine status, and security alerts
+* **Status pill:** A green **"SYSTEMS ONLINE"** badge with a pulsing status indicator
 
 ### Navigation
-Seven navigation tabs rendered as custom HTML buttons with SVG icons: Dashboard, Analyzer, URL Scanner, QR Scanner, Company Verifier, Analytics, and About. The active tab glows cyan with an underline indicator. Navigation works via JavaScript that bridges the custom HTML component back to Streamlit's hidden button system.
+
+Seven navigation tabs are provided through custom HTML buttons with SVG icons:
+
+* Dashboard
+* Analyzer
+* URL Scanner
+* QR Scanner
+* Company Verifier
+* Analytics
+* About
+
+The active tab is visually highlighted, and navigation is connected to Streamlit's interface through JavaScript bridging.
 
 ---
 
-## 📄 Pages & Features
+# 📄 Pages & Features
 
-### 1. Dashboard
-The landing page displays:
-- **Animated radar scanner** — three pulsing concentric rings with a sweeping radar beam around a central shield emoji, establishing the "threat monitoring" theme
-- **4 live stat cards:** Total Scans, Threats Detected, Safe Scans, Critical Threats — all pulled from session state and updated in real time
-- **Quick Action Grid:** Four clickable cards (AI Analyzer, URL Scanner, QR Scanner, Company Verifier) that navigate the user instantly
-- **Recent Threat History feed:** A reverse-chronological live feed showing the last 8 scans with their threat level badge, scan type, risk score, and timestamp
+## 1. Dashboard
 
----
+The landing page provides an overview of the current security scanning session.
 
-### 2. AI Analyzer (Text / Image OCR / PDF)
+### Main Components
 
-This is the core feature, with three sub-tabs:
+* **Animated radar scanner** — three pulsing concentric rings with a sweeping radar beam around a central shield, establishing the threat-monitoring theme
+* **4 live stat cards:**
 
-#### 📝 Text / Message Analysis
-- Users paste any suspicious message, job offer, email, or recruiter text
-- **Multilingual support banner** shows all 7 supported languages with flags
-- **9 quick example buttons** — 3 English scam examples + 6 multilingual examples in Tamil, Hindi, Spanish, Telugu, Kannada, and Malayalam
-- A character counter updates live as the user types
-- On clicking "Analyze Threat," a 6-step animated progress bar runs through: language detection → translation → NLP analysis → pattern detection → risk scoring → report generation
-- The result shows the **Language Detection Badge** (flag, language name, native script, confidence %, and whether translation was applied)
-- The full result card renders with: Neural Risk Ring, Verdict Badge, Meta Grid (threat level / risk % / safety status), AI Verdict text, Suspicious Indicator chips, and Recommendations
+  * Total Scans
+  * Threats Detected
+  * Safe Scans
+  * Critical Threats
+* **Quick Action Grid:** Four clickable cards for:
 
-#### 🖼️ Image (OCR) Analysis
-- User uploads a PNG/JPG/BMP/TIFF image
-- The image is displayed alongside a 3-step OCR progress animation
-- Tesseract OCR extracts text from the image
-- The extracted text is then passed through the full AI analysis pipeline
-- Results show word count, character count, and the full threat result card
+  * AI Analyzer
+  * URL Scanner
+  * QR Scanner
+  * Company Verifier
+* **Recent Threat History:** A reverse-chronological feed displaying recent scans with threat level, scan type, risk score, and timestamp
 
-#### 📄 PDF Document Analysis
-- User uploads a PDF file
-- Shows filename, file size (KB), and page count stat cards
-- Extracts up to 3,000 characters from the first few pages using `pdfplumber` (with `PyPDF2` as fallback)
-- Displays a document preview (first 500 chars)
-- Passes extracted text through the full AI pipeline
+The statistics are maintained in the application session and updated as scans are performed.
 
 ---
 
-### 3. URL Scanner
-- Three quick example buttons: a phishing login URL, an IP-domain URL, and a legitimate LinkedIn URL
-- User enters any URL
-- The URL is displayed in a styled `url-display` block before scanning
-- A 4-step progress animation runs: parsing → domain reputation → phishing pattern scan → risk scoring
-- Results include all URL-specific fields: HTTPS status, domain, TLD, IP-as-domain flag, URL length, suspicious keywords, typosquatting detection, known-legitimate-domain check, and trust score
+## 2. AI Analyzer — Text / Image OCR / PDF
+
+The AI Analyzer is the core analysis feature and provides three major input methods.
 
 ---
 
-### 4. QR Scanner
-- User uploads a QR code image (PNG/JPG/BMP/GIF)
-- The image is displayed with a scan-line animation overlay
-- OpenCV's `QRCodeDetector` decodes the QR — with two fallback strategies: WeChatQRCode detector and a grayscale+Otsu-threshold pre-process
-- If the decoded content is a URL → runs URL analysis; if it's text → runs text analysis
-- The decoded content is displayed, then the full result card renders below
+### 📝 Text / Message Analysis
+
+Users can paste suspicious messages, job offers, emails, recruiter messages, or other text content.
+
+The interface provides:
+
+* Multilingual support
+* Language detection
+* Translation where required
+* Character counter
+* Quick example messages
+* Animated analysis progress
+* AI-based threat detection
+* Rule-based analysis
+* Risk scoring
+* Explainable suspicious indicators
+
+When the user selects **Analyze Threat**, the system processes the input through stages including:
+
+1. Language detection
+2. Translation
+3. NLP analysis
+4. Pattern detection
+5. Risk scoring
+6. Threat report generation
+
+The result includes:
+
+* Language detection badge
+* Detected language
+* Native language name/script
+* Detection confidence
+* Translation status
+* Neural Risk Ring
+* Verdict badge
+* Threat level
+* Risk score
+* AI verdict
+* Suspicious indicators
+* Recommendations
 
 ---
 
-### 5. Company Verifier
-- Three input fields: Company Name, Recruiter Email, Company Website
-- Aggregates three separate analyses:
-  - **Company name heuristics** — flags suspicious words like "overseas jobs," "guaranteed placement," "100% placement," etc.
-  - **Recruiter email domain check** — detects free-mail providers (Gmail, Yahoo, Hotmail, Outlook, etc.) which legitimate companies don't use for official recruiting
-  - **Website URL analysis** — runs the full URL phishing scanner
-- Shows a **Trust Score meter** (0–100) as a animated progress bar
-- Outputs a combined risk score (average of all three), a verdict, and tiered recommendations
+### 🖼️ Image / OCR Analysis
+
+Users can upload image files such as:
+
+* PNG
+* JPG
+* BMP
+* TIFF
+
+The image is processed using **Tesseract OCR**.
+
+The OCR pipeline performs image enhancement before text extraction. This can include:
+
+* Upscaling
+* Contrast enhancement
+* Denoising
+* Sharpening
+* Deskewing
+* Adaptive thresholding
+
+The extracted text is then passed through the same text-analysis pipeline used for normal messages.
+
+The result displays:
+
+* Extracted text information
+* Word count
+* Character count
+* Threat level
+* Risk score
+* Suspicious indicators
+* Final analysis
+
+This allows screenshots of scam messages, advertisements, job offers, or other suspicious content to be analyzed instead of requiring users to manually type the text.
 
 ---
 
-### 6. Analytics
-- Requires at least one prior scan in the session
-- **4 summary stat cards** (same as Dashboard, updated live)
-- **Threat Distribution Pie Chart** (Plotly donut chart) — shows the breakdown of SAFE / LOW / MEDIUM / HIGH / CRITICAL scans by count and percentage, color-coded to match the threat palette
-- **Scan Category Bar Chart** — horizontal bar chart showing how many scans were done per tool (AI Analyzer, URL Scanner, OCR Scanner, etc.)
-- **Scan History Table** — shows the last 20 scans with index, type, level badge, score, and timestamp; rows have hover highlight
-- **Risk Score Timeline** — a Plotly line chart with area fill showing how risk scores have trended across the last 15 scans
+### 📄 PDF Document Analysis
+
+Users can upload PDF documents for threat analysis.
+
+The system:
+
+1. Opens the PDF
+2. Extracts the available text layer
+3. Checks whether the extracted text is sufficient
+4. Uses OCR when the page appears to be scanned or contains weak text extraction
+5. Detects QR codes contained within PDF pages
+6. Combines the extracted information
+7. Sends the resulting content to the AI analysis pipeline
+
+The PDF pipeline uses `pdfplumber` and supporting PDF/OCR tools.
+
+For scanned pages, the system can render pages at high resolution and apply OCR. Difficult pages can receive an additional higher-resolution OCR pass.
+
+The result includes:
+
+* Filename
+* File size
+* Page count
+* Word count
+* Character count
+* Text preview
+* OCR status
+* Detected QR codes where applicable
+* Threat analysis
+
+This allows CyberLens AI to detect scam content even when the malicious information is embedded inside a scanned document rather than a normal text-based PDF.
 
 ---
 
-### 7. About
-- Animated floating shield hero with glowing drop-shadow
-- **"What CyberLens Protects Against"** — 5 cards: Fake Jobs, Phishing Links, QR Scams, Fake Recruiters, Fraud PDFs
-- **"How It Works"** — 4-step flow: Upload → AI Analysis → Risk Scoring → Threat Report
-- **"Why This Project Matters"** — an honest, mission-driven message about the real-world problem of scam fraud targeting students and job seekers
-- **"Future Vision" Roadmap** — 5 planned features actually listed in the app: a mobile-responsive application, an AI chatbot to guide users, a complete multilingual *website interface* (today only the scam-detection engine is multilingual, not the UI chrome), voice scam detection from uploaded audio, and user login with saved scan history
-- Footer credits the team (Puvisha S, Vidhya Priya P, Hemanthika M) and lists the tech stack
+# 3. URL Scanner
+
+The URL Scanner is a dedicated phishing-detection component designed specifically for suspicious links.
+
+Users can enter any URL and receive a structural and threat-based analysis.
+
+### Scanning Process
+
+The URL scanner performs stages such as:
+
+1. URL parsing
+2. Domain analysis
+3. Reputation and structural checks
+4. Phishing pattern detection
+5. Machine-learning prediction
+6. Risk scoring
+
+The result can include:
+
+* HTTPS status
+* Domain
+* TLD
+* IP-as-domain detection
+* URL length
+* Suspicious words
+* Typosquatting detection
+* Known-legitimate-domain check
+* Trust score
+* ML prediction
+* Risk level
+
+The system combines independent URL analysis techniques rather than relying on a single indicator.
 
 ---
 
-## 🧠 AI / ML Engine (ml_model.py)
+# 4. QR Scanner
 
-This is the most technically sophisticated part of the project.
+The QR Scanner allows users to upload QR-code images and inspect their decoded content.
 
-### Architecture: Dual TF-IDF + Soft-Voting Ensemble
+Supported image formats include:
 
-**Feature Extraction:**
-- **Word n-gram TF-IDF** (1–3 grams, 8,000 features) — captures phrases like "pay registration fee," "guaranteed income," "no interview"
-- **Character n-gram TF-IDF** (3–5 char grams, 4,000 features) — catches obfuscated text like "j0b," "fr33," character-level typos used to evade keyword filters
-- Both are merged via `FeatureUnion` into a single 12,000-dimensional feature vector
+* PNG
+* JPG
+* BMP
+* GIF
 
-**Classifiers (Soft Voting Ensemble):**
-- **Logistic Regression** (weight: 3) — the primary classifier, proven strongest on short text; C=2.0, balanced class weights
-- **SGDClassifier** with modified Huber loss + Isotonic calibration (weight: 2) — a fast stochastic variant with different inductive bias, provides ensemble diversity
-- **Random Forest** (200 trees, depth 12, weight: 2) — adds non-linear decision capacity
+The system uses **OpenCV's QRCodeDetector** along with additional decoding strategies to improve detection reliability.
 
-**Training Pipeline:**
-1. Data loaded from `scam.csv` if present (primary, user-supplied dataset), falling back to the legacy `sample_data.csv` if it isn't
-2. Text preprocessed: lowercased, URLs → `URLTOKEN`, money amounts (`$` or `Rs`) → `MONEYTOKEN`, percentages → `PERCENTTOKEN`, long digit strings → `PHONETOKEN`, email addresses → `EMAILTOKEN`, stop words removed, lemmatization applied
-3. 80/20 stratified train/test split
-4. Threshold tuning: instead of a fixed 0.5 cutoff, the best threshold (swept 0.30–0.70) is found by maximizing F1 score on the held-out test set
-5. 5-fold stratified cross-validation to report reliable CV F1 scores
-6. Model, ensemble, and tuned threshold are saved together as one dict (`{'pipeline':..., 'threshold':...}`) to `scam_detector.pkl` via `joblib` — there's no separate vectorizer file; the TF-IDF vectorizers live inside the saved pipeline
-7. If no `.pkl` artifact exists on startup but a CSV is present, the app trains automatically on first load
+The QR pipeline can:
 
-**Inference:**
-- Text is preprocessed → dual TF-IDF transform → ensemble `predict_proba`
-- **Rule-based pre-filter** runs 8 regex patterns for high-confidence scam signals (e.g., "pay ... fee/now/urgent," "wire transfer/bitcoin ... send/pay," "send/share ... OTP/Aadhaar/PAN/bank details," "earn $X/day," "limited seats/act fast"). Hits are saturating-scaled into a `rule_score` (0.0–1.0) via `1 − 1/(1 + hits×1.3)` — 1 hit ≈ 0.57, 2 hits ≈ 0.72, 3+ hits ≈ 0.92+
-- If `rule_score ≥ 0.70` (2+ strong rule hits): final probability = `0.35 × ML + 0.65 × rules` — rules dominate for novel scam text the ML model hasn't seen
-- Otherwise: `0.50 × ML + 0.50 × rules` — an even split
-- The scam/legitimate label is decided by comparing this blended probability against a **per-model tuned threshold** (found during training, not a fixed 0.5)
-- Confidence is computed as `|blended_probability − 0.5| × 2` — giving a full 0–100% range, avoiding the "artificially low confidence" problem of naive `max(p, 1-p)`
+1. Detect the QR code
+2. Decode its payload
+3. Identify the payload type
+4. Route the content to the appropriate analysis engine
 
-**Feature Importance:**
-- `get_feature_importance()` extracts the top-N TF-IDF scoring tokens for any input text, providing interpretability ("why did the model flag this?")
+If the decoded content is a:
+
+* **URL** → it is passed to the URL Scanner
+* **Text message** → it is passed to the AI Text Analyzer
+
+This creates a connection between QR scanning and the existing threat-detection pipelines.
+
+The decoded payload is displayed to the user together with the resulting security analysis.
 
 ---
 
-## 📊 Risk Scoring System (utils.py)
+# 5. Company Verifier
 
-### Keyword Lexicon (SCAM_KEYWORDS)
-A large, manually curated dictionary of **675 weighted scam-signal phrases** (1–5 points each) — not a small starter list. Highlights:
-- **Weight 5:** high-certainty fraud phrases like sharing OTP/Aadhaar/bank details, placement/offer-letter fees
-- **Weight 3–4:** payment/registration/processing fees, wire transfer, bitcoin, "verify your account," KYC update, guaranteed income, "no interview," account-suspension language
-- **Weight 1–2:** softer signals like "work from home," "urgent," "click here"
-- Heavy coverage of India-specific fraud: OTP scams, KYC/Aadhaar/PAN phishing, UPI scams, "digital arrest"/fake CBI notices, fake electricity-bill threats, fake customs/parcel-fee scams, fake scholarship fees
+The Company Verifier is designed particularly for evaluating suspicious recruitment offers and recruiter information.
 
-Two supporting lists reduce false positives:
-- **`NEGATION_WORDS` / `SAFE_PHRASES`** — phrases like "no registration fee," "we never ask for OTP," or "official website" are stripped or checked as negating context before a keyword hit counts
-- **`SAFE_KEYWORDS`** (~110 everyday/institutional phrases like "meeting," "invoice," "student portal," "google meet") dampen the score when only weak (weight ≤2) keyword hits accompany them, so routine emails aren't mis-flagged
+The user can provide:
 
-**Combination bonuses:** on top of individual keyword weights, 25 hand-picked keyword *pairs* (e.g. `"registration fee" + "urgent"`, `"kyc" + "account blocked"`, `"offer letter" + "fee"`) each add an extra 5–7 points when both phrases co-occur — because real scams are far more reliably identified by combinations of signals than any single word.
+* Company Name
+* Recruiter Email
+* Company Website
 
-### Risk Level Scale (exact thresholds from `compute_risk_level`)
+The system combines multiple independent checks.
 
-| Score | Level | Color |
-|-------|-------|-------|
-| 0–20 | SAFE | 🟢 Green |
-| 21–40 | LOW | 🔵 Blue |
-| 41–60 | MEDIUM | 🟡 Amber |
-| 61–80 | HIGH | 🟠 Orange |
-| 81–100 | CRITICAL | 🔴 Red |
+### Company Name Analysis
 
-### Score Normalization
-The raw keyword score is normalized linearly against a ceiling of 20 points (`min(raw/20, 1.0) × 100`), capped at 100.
+The system examines the company name and related information for suspicious recruitment indicators such as:
 
-### Final Blended Score
-The text analyzer dynamically re-weights the ML model vs. the keyword score depending on how strong the keyword signal is, rather than using one fixed ratio:
-- If normalized keyword score ≥ 60 → **30% ML / 70% keywords** (keywords dominate when the lexicon hit is very strong)
-- If normalized keyword score ≤ 10 → **70% ML / 30% keywords** (ML dominates when there's little lexical evidence)
-- Otherwise → **45% ML / 55% keywords** (balanced middle ground)
+* Guaranteed jobs
+* 100% placement claims
+* Overseas job promises
+* Suspicious employment language
+* Other scam-related phrases
 
----
+### Recruiter Email Analysis
 
-## 🤖 URL Phishing ML Model (url_model.py)
+The recruiter email is checked for indicators including:
 
-Separate from the text scam model, CyberLens AI trains a **second, dedicated ML classifier purely for URL structure** — it never has to fetch the page to make this prediction.
+* Free/public email providers
+* Disposable email services
+* Website-domain mismatch
+* Suspicious email keywords
+* Random-looking email local parts
+* Excessive digits
+* Brand typosquatting
 
-**Features extracted per URL (11 total):** `url_length`, `num_dots`, `has_https`, `has_ip` (IPv4 **and** IPv6-aware), `num_subdirs`, `num_params`, `suspicious_words` (count of hits against a 39-word phishing-lexicon list: login, verify, banking, webscr, wallet, crypto, urgent, etc.), `tld_risk`, `special_char_count`, `digits_count`, and Shannon `entropy` of the raw URL string.
+### Website Analysis
 
-**`tld_risk` is learned, not hand-coded:** during training, each TLD's historical phishing rate is computed directly from the labeled dataset (`groupby('tld')['y'].mean()`) and stored in a `tld_risk_map`; unseen TLDs fall back to the dataset's overall positive-class prior.
+The company website is passed through the URL analysis pipeline.
 
-**Model:** soft-voting ensemble of a `RandomForestClassifier` (300 trees) and a `GradientBoostingClassifier` (200 estimators, depth 4), wrapped in a pipeline with median imputation. Trained with the same 80/20 stratified split + F1-maximizing threshold sweep + 5-fold CV pattern as the text model, and saved to `phishing_url_detector.pkl`.
+The system checks:
 
-**Inference:** `predict_url()` extracts the 11 features, runs them through the pipeline, and returns a `phishing`/`legitimate` label plus probability and confidence — deliberately **without** fetching the live page (page fetching/content-scam-phrase scanning is handled separately upstream by `analyzer.analyse_webpage_content()` so the app never issues two HTTP requests for one scan).
+* URL structure
+* Domain characteristics
+* HTTPS
+* Suspicious patterns
+* Typosquatting
+* TLD risk
+* Domain reputation indicators
 
-**Interpretability:** `get_feature_importance_url()` mirrors the text model's explainability — it multiplies the ensemble's averaged `feature_importances_` by this URL's own normalized feature values, so the app can show *which specific features* (e.g. high entropy, many suspicious words) drove a given verdict.
+### Cross-Verification
 
----
+The Company Verifier also checks whether the provided:
 
-## 🌐 URL Heuristic Risk Analysis (utils.py — `analyse_url`)
+**Company Name ↔ Recruiter Email ↔ Website**
 
-Independently of the ML model above, every URL also runs through a 12-point rule-based scorer that produces flags and a heuristic score (capped 0–100):
+are mutually consistent.
 
-| Signal | Score added |
-|---|---|
-| Not HTTPS | +25 |
-| IP address used as the domain | +35 |
-| URL longer than 75 characters | +12 |
-| Each phishing-style keyword matched in the URL (from a 33-word list: `login`, `verify`, `secure`, `banking`, `crypto`, `refund`, `giving`, etc.) | +12 per match |
-| Risky TLD (`.xyz`, `.top`, `.click`, `.loan`, `.pw`, `.gq`, `.cf`, `.tk`, `.ml`, `.ga`, `.win`, `.bid`, `.review`, `.country`, `.work`) | tier weight (3 or 4) × 10 |
-| Typosquatting a known brand (e.g. `paypa1.com`) | +40 |
-| `@` symbol in the URL | +30 |
-| Percent-encoded characters | +8 |
-| Redirection query parameter (`redirect=`, `url=`, `next=`, etc.) | +15 |
-| High digit ratio (>15% of characters are digits) | +10 |
-| More than 8 special characters | +12 |
-| High Shannon entropy (>4.5) | +10 |
-| Known link shortener (bit.ly, tinyurl.com, cutt.ly, etc.) | +15 |
-| Domain matches a known-legitimate list (Google, Microsoft, LinkedIn, Infosys, TCS, Flipkart, etc.) | −60 |
+The system compares company-name tokens against the website domain, website title, fetched page content, and recruiter email information.
 
-*(Note: bare brand names like "paypal" or "google" are deliberately **not** in the keyword list — matching them would flag the legitimate domains themselves. Brand impersonation is instead caught by the dedicated typosquatting check above.)*
+A trusted-company/domain check can provide an additional identity confirmation, while detected brand impersonation can significantly increase the risk.
 
-The final per-URL risk score used in the app is a **hybrid** of this heuristic score, the URL ML model's probability, the text-scam-model's probability on the page's fetched content, and a bonus for any scam phrases found on the live page — combined and then floored at a minimum ("false-safe floor") whenever the phishing ML model or the page-content model is highly confident, so a low heuristic score alone can never mask a page the AI models are confident is malicious.
+The final result provides:
 
-
-
-## 🌍 Multilingual Engine (language_utils.py)
-
-CyberLens AI can detect and analyze content in 7 languages:
-
-| Code | Language | Script |
-|------|----------|--------|
-| `ta` | Tamil | தமிழ் |
-| `en` | English | Latin |
-| `te` | Telugu | తెలుగు |
-| `ml` | Malayalam | മലയാളം |
-| `kn` | Kannada | ಕನ್ನಡ |
-| `hi` | Hindi | हिन्दी |
-| `es` | Spanish | Español |
-
-### Detection Strategy (3-layer):
-1. **Unicode block heuristic** — counts codepoints per Indic script range; if a script accounts for ≥60% of script characters, it's identified with 97% confidence. Zero-dependency, instant.
-2. **langdetect library** — offline ML-based detector for Latin-script languages (English vs Spanish differentiation)
-3. **Latin script fallback** — checks for common Spanish function words (`de`, `la`, `el`, `que`, etc.); if 3+ markers found → Spanish; otherwise → English
-
-### Translation Strategy (2-layer):
-1. **googletrans** (unofficial Google Translate API, no key required)
-2. **deep-translator** as fallback
-3. If both fail → original text is passed through unchanged (analysis still runs)
-
-After translation, the UI shows a language badge with the flag, language name, native name, confidence %, and which translation backend was used. The user can expand to see both the original text and the English translation used for analysis.
+* Company risk
+* Email risk
+* Website risk
+* Identity mismatch information
+* Cross-verification information
+* Overall risk score
+* Trust score
+* Verdict
+* Recommendations
 
 ---
 
-## 🗂️ File Architecture
+# 6. Analytics Dashboard
 
-| File | Role |
-|------|------|
-| `app.py` | Streamlit frontend — all UI, pages, navigation, result rendering (~2,180 lines) |
-| `analyzer.py` | High-level analysis wrappers for text, URL, QR, OCR, PDF, company (~915 lines) |
-| `ml_model.py` | Text scam-classifier: training, inference, preprocessing, rule engine, feature importance (~370 lines) |
-| `url_model.py` | URL phishing-classifier: feature extraction, training, inference, feature importance (~470 lines) |
-| `utils.py` | Keyword lexicon, risk scoring, heuristic URL analysis, recruiter/company heuristics (~695 lines) |
-| `language_utils.py` | Language detection, translation, language badge HTML |
-| `styles.css` | Custom CSS — glass morphism, animations, color variables, component styles |
-| `scam_detector.pkl` | Trained artifact for the **text** model (TF-IDF pipeline + ensemble + tuned threshold, all in one dict) |
-| `phishing_url_detector.pkl` | Trained artifact for the **URL** model (RF+GB ensemble + tuned threshold + learned TLD-risk map) — generated by `url_model.py`, expected alongside the text model but not part of this upload |
-| `scam.csv` / `sample_data.csv` | Training data for the text model — `scam.csv` used if present, `sample_data.csv` as legacy fallback |
-| `url.csv` | Training data for the URL model |
-| `requirements.txt` | All Python dependencies |
-| `packages.txt` | System package dependency (`tesseract-ocr`) required for OCR on Streamlit Cloud |
+The Analytics section provides a visual summary of scanning activity.
 
----
+It includes:
 
-## ⚙️ Tech Stack Summary
+### Summary Statistics
 
-- **Framework:** Streamlit (Python web app framework)
-- **ML/NLP:** scikit-learn (TF-IDF, Logistic Regression, SGD, Random Forest, VotingClassifier, CalibratedClassifierCV), NLTK (stopwords, lemmatization)
-- **Computer Vision:** OpenCV (QR decoding), Pillow (image processing), pytesseract (OCR)
-- **PDF Parsing:** pdfplumber (primary), PyPDF2 (fallback)
-- **Visualization:** Plotly (gauges, pie charts, bar charts, line charts)
-- **Language:** langdetect, googletrans, deep-translator
-- **Persistence:** joblib (model serialization)
-- **URL Analysis:** Python's built-in `urllib.parse` + custom regex heuristics
+* Total Scans
+* Threats Detected
+* Safe Scans
+* Critical Threats
 
----
+### Threat Distribution
 
-## 🎯 What Makes This Project Stand Out
+A Plotly donut chart displays the distribution of:
 
-1. **Multilingual-first design** — most scam detectors are English-only; CyberLens handles Tamil, Hindi, Telugu, Kannada, Malayalam, and Spanish natively, targeting the Indian subcontinent where these scams are most prevalent
+* SAFE
+* LOW
+* MEDIUM
+* HIGH
+* CRITICAL
 
-2. **Multi-modal threat detection** — the same AI pipeline handles raw text, images (via OCR), PDFs, URLs, QR codes, and company profiles — all in one unified interface
+The chart provides both count and percentage information.
 
-3. **Two independently-trained ML models, not one** — a dual-TF-IDF ensemble for text/message content, and a completely separate 11-feature structural ensemble (Random Forest + Gradient Boosting) purely for URL phishing detection, each with its own F1-tuned decision threshold
+### Scan Category Analysis
 
-4. **Interpretable AI** — the system doesn't just output a score; it shows which specific keywords, TF-IDF features, URL structural features, and rule patterns contributed to the verdict
+A bar chart displays the number of scans performed through different tools, such as:
 
-4. **Ensemble + rule hybrid** — combining a soft-voting ML ensemble with regex-based scam rules means the model catches both statistically-learned patterns AND novel, unseen scam variants
+* AI Analyzer
+* URL Scanner
+* QR Scanner
+* OCR Scanner
+* Other supported analysis categories
 
-5. **Production-quality UI** — the animated Matrix canvas, Neural Risk Ring SVG, live ticker, color-coded threat levels with pulse animations, and dark cybersecurity aesthetic make this feel like a real professional security tool, not a student project
+### Scan History
 
-6. **India-specific threat intelligence** — the keyword lexicon includes OTP fraud, Aadhaar/PAN phishing, UPI scams, fake placement fees, and KYC fraud — threats that are specifically common in India but underrepresented in Western security tools
+The scan history table displays recent scans with:
+
+* Scan index
+* Scan type
+* Threat level
+* Risk score
+* Timestamp
+
+The application stores scan-history information within browser/session storage so that dashboard statistics can be updated as the user performs scans.
 
 ---
 
-*CyberLens AI was built to be a real, working tool that makes advanced cybersecurity accessible to everyone.*
+# 7. About
+
+The About section explains the purpose and capabilities of CyberLens AI.
+
+It includes:
+
+### What CyberLens Protects Against
+
+Five major threat categories are highlighted:
+
+1. Fake Jobs
+2. Phishing Links
+3. QR Scams
+4. Fake Recruiters
+5. Fraudulent PDFs
+
+### How It Works
+
+The basic workflow is:
+
+**Upload → AI Analysis → Risk Scoring → Threat Report**
+
+### Why This Project Matters
+
+CyberLens AI focuses on the growing problem of online scams affecting students, job seekers, and everyday internet users.
+
+The platform aims to make cybersecurity analysis easier to access by allowing users to check multiple forms of suspicious digital content through a single interface.
+
+### Future Vision
+
+The planned future improvements include:
+
+* Mobile-responsive application
+* AI chatbot for user guidance
+* Complete multilingual website interface
+* Voice scam detection from uploaded audio
+* User login and saved scan history
+
+The footer provides the project team information and technology stack.
+
+---
+
+# 🧠 AI / ML Engine — Text Scam Detection
+
+The text-analysis engine is built using a combination of **dual TF-IDF feature extraction, machine-learning ensemble classification, rule-based detection, and threshold-based decision making**.
+
+## Architecture: Dual TF-IDF + Soft-Voting Ensemble
+
+### Feature Extraction
+
+The text model uses two complementary TF-IDF representations.
+
+### Word N-Gram TF-IDF
+
+The word-level vectorizer uses n-grams from 1 to 3 words.
+
+It captures meaningful phrases such as:
+
+* "pay registration fee"
+* "guaranteed income"
+* "no interview"
+* "verify your account"
+
+This allows the model to learn relationships between individual words and short phrases.
+
+### Character N-Gram TF-IDF
+
+Character-level n-grams from 3 to 5 characters are also used.
+
+This helps detect intentionally modified or obfuscated scam words such as:
+
+* `j0b`
+* `fr33`
+* character-level spelling variations
+
+Both feature sets are combined using `FeatureUnion`.
+
+This gives the model both **semantic word-level information and character-level patterns**.
+
+---
+
+# 🤖 Text Classification Ensemble
+
+The text model uses three classifiers through soft voting.
+
+### Logistic Regression
+
+Logistic Regression is the primary classifier and receives the highest ensemble weight.
+
+It is effective for high-dimensional sparse text representations such as TF-IDF features.
+
+### SGDClassifier
+
+An SGD-based classifier with modified Huber loss provides a different learning approach and increases ensemble diversity.
+
+Its probability output is calibrated using `CalibratedClassifierCV`.
+
+### Random Forest
+
+Random Forest introduces non-linear decision-making and helps the ensemble capture patterns that may not be represented by the linear classifiers.
+
+### Soft Voting
+
+The three models do not simply vote on their final labels.
+
+Instead, their predicted probabilities are combined using weighted soft voting.
+
+The Logistic Regression model has weight **3**, while the SGD and Random Forest models have weight **2** each.
+
+---
+
+# ⚙️ Text Model Training Pipeline
+
+The training process follows these major stages:
+
+1. Load the training data
+2. Map the scam/legitimate labels
+3. Preprocess the text
+4. Convert the text into TF-IDF features
+5. Train the ensemble
+6. Split the data using an 80/20 stratified train/test split
+7. Tune the classification threshold
+8. Evaluate the model using F1 score
+9. Perform stratified cross-validation
+10. Save the trained model and threshold
+
+The model uses a **F1-maximizing threshold strategy** rather than automatically assuming that `0.5` is the best decision boundary.
+
+---
+
+# 🎯 Text Model Threshold & F1 Score
+
+The model first produces a probability representing how strongly the input appears to belong to the scam class.
+
+The **threshold acts as the decision cut-off**.
+
+For the current fine-tuned Text Model:
+
+* **Threshold: 0.67**
+* **F1 Score: 97%**
+
+The decision process is:
+
+**Probability ≥ 0.67 → Scam**
+
+**Probability < 0.67 → Legitimate**
+
+The threshold was selected through threshold tuning to improve the balance between identifying actual scams and avoiding incorrect scam classifications.
+
+### Easy explanation
+
+**"The Text Model uses a 0.67 threshold, and its F1 score is 97%."**
+
+---
+
+# 🔍 Text Model Inference
+
+During prediction:
+
+1. The input text is preprocessed
+2. Word and character TF-IDF features are generated
+3. The ensemble produces an ML probability
+4. The rule-based scam detector independently calculates a rule score
+5. The ML probability and rule score are blended
+6. The resulting probability is compared with the tuned threshold
+7. The final result is classified as Scam or Legitimate
+8. A confidence value is calculated
+
+When strong rule-based scam signals are detected, the rule engine receives greater influence in the final probability.
+
+This hybrid approach allows the system to combine **learned statistical patterns with explicit high-confidence scam patterns**.
+
+---
+
+# 🧩 Rule-Based Pre-Filter
+
+The text model also contains a rule-based pre-filter for high-confidence scam constructions.
+
+Examples include patterns related to:
+
+* Payment or registration fees
+* Wire transfers
+* Cryptocurrency payments
+* OTP or bank-detail requests
+* Guaranteed jobs
+* No-interview selection
+* Unrealistic earning claims
+* Password or credential requests
+* Urgency and limited-seat pressure
+
+Multiple rule matches are converted into a saturating rule score between 0 and 1.
+
+This prevents the system from relying entirely on the machine-learning classifier when an input contains extremely strong scam patterns.
+
+---
+
+# 🔎 Explainability
+
+CyberLens AI provides interpretability through feature extraction.
+
+The system can identify important TF-IDF tokens associated with a particular input.
+
+This allows the result to show suspicious indicators that contributed to the prediction instead of presenting only a final label.
+
+The user can therefore understand **why the system considered the message suspicious**.
+
+---
+
+# 🔗 URL Phishing ML Model
+
+CyberLens AI contains a **separate machine-learning model specifically designed for URL phishing detection**.
+
+The URL model is independent from the text-message model because URLs have a fundamentally different structure from natural-language messages.
+
+The model analyzes the URL itself rather than depending on the textual content of the webpage.
+
+---
+
+# 📊 URL Features
+
+The URL model extracts **11 structural features**:
+
+1. `url_length`
+2. `num_dots`
+3. `has_https`
+4. `has_ip`
+5. `num_subdirs`
+6. `num_params`
+7. `suspicious_words`
+8. `tld_risk`
+9. `special_char_count`
+10. `digits_count`
+11. `entropy`
+
+These features describe the structural characteristics of a URL.
+
+For example:
+
+* Very long URLs can indicate suspicious construction
+* Multiple subdirectories can indicate unusual URL structure
+* Raw IP addresses can be suspicious
+* Large numbers of parameters can indicate redirection or tracking
+* Suspicious words can indicate phishing intent
+* High entropy can indicate randomly generated URL components
+* Excessive digits or special characters can provide additional signals
+
+---
+
+# 🧠 URL ML Architecture
+
+The URL model uses a soft-voting ensemble containing:
+
+### Random Forest
+
+Random Forest uses multiple decision trees to learn complex relationships between URL features.
+
+### Gradient Boosting
+
+Gradient Boosting builds models sequentially and focuses on improving previous errors.
+
+### Soft Voting
+
+The two models combine their predicted probabilities to produce the final ML probability.
+
+The model is wrapped in a pipeline with median imputation so that missing numeric values can be handled safely.
+
+---
+
+# 🎯 URL Model Threshold & F1 Score
+
+Like the Text Model, the URL model does not simply rely on a default probability cut-off.
+
+The final threshold was tuned for the phishing classification task.
+
+For the current fine-tuned URL Model:
+
+* **Threshold: 0.65**
+* **F1 Score: 100%**
+
+The decision process is:
+
+**Probability ≥ 0.65 → Phishing**
+
+**Probability < 0.65 → Legitimate**
+
+### Easy explanation
+
+**"The URL Model uses a 0.65 threshold, and its F1 score is 100% for phishing detection."**
+
+The threshold therefore acts as the final decision boundary between phishing and legitimate URLs.
+
+---
+
+# 🔍 URL Model Inference
+
+During URL prediction:
+
+1. The URL is parsed
+2. The 11 structural features are extracted
+3. The features are passed into the trained ensemble
+4. The ensemble produces a phishing probability
+5. The probability is compared with the tuned threshold
+6. The final result is classified as phishing or legitimate
+7. Confidence and supporting feature information are returned
+
+The URL model itself does not need to fetch the webpage.
+
+Live webpage fetching and webpage-content analysis are handled separately by the higher-level analyzer.
+
+This avoids performing duplicate network requests during a single URL scan.
+
+---
+
+# 🌐 URL Heuristic Risk Analysis
+
+In addition to the URL ML model, CyberLens AI uses an independent rule-based URL analysis engine.
+
+The heuristic system checks multiple signals, including:
+
+| Signal                       |      Risk Contribution |
+| ---------------------------- | ---------------------: |
+| Non-HTTPS URL                |                    +25 |
+| IP address as domain         |                    +35 |
+| Long URL                     |                    +12 |
+| Suspicious URL keywords      | +12 per distinct match |
+| Risky TLD                    |         Weighted score |
+| Typosquatting                |                    +40 |
+| `@` character                |                    +30 |
+| Percent encoding             |                     +8 |
+| Redirect parameters          |                    +15 |
+| High digit ratio             |                    +10 |
+| High special-character count |                    +12 |
+| High entropy                 |                    +10 |
+| Known link shortener         |                    +15 |
+| Known legitimate domain      | Strong trust reduction |
+
+The final heuristic score is capped between 0 and 100.
+
+The system then combines the independent URL signals with the machine-learning results and, where applicable, webpage-content analysis.
+
+This provides a layered approach instead of relying on a single detection method.
+
+---
+
+# 🌍 Multilingual Engine
+
+CyberLens AI supports analysis across **7 languages**:
+
+| Code | Language  | Script  |
+| ---- | --------- | ------- |
+| `ta` | Tamil     | தமிழ்   |
+| `en` | English   | Latin   |
+| `te` | Telugu    | తెలుగు  |
+| `ml` | Malayalam | മലയാളം  |
+| `kn` | Kannada   | ಕನ್ನಡ   |
+| `hi` | Hindi     | हिन्दी  |
+| `es` | Spanish   | Español |
+
+The system is designed to support regional-language scam detection, which is particularly important for users receiving suspicious messages in local languages.
+
+---
+
+# 🔤 Language Detection
+
+The language-detection system uses multiple strategies.
+
+### 1. Unicode Script Detection
+
+The system checks Unicode character ranges to identify Indic scripts.
+
+This allows languages such as Tamil, Telugu, Malayalam, Kannada, and Hindi to be identified based on their writing systems.
+
+### 2. Language Detection Library
+
+For Latin-script languages, an offline language-detection mechanism is used to distinguish languages such as English and Spanish.
+
+### 3. Fallback Detection
+
+Additional language markers can be checked when required to improve identification.
+
+---
+
+# 🔄 Translation
+
+When the detected language requires translation for the English-based analysis pipeline, CyberLens AI attempts translation using:
+
+1. `googletrans`
+2. `deep-translator`
+
+If translation is unavailable, the original text is still passed through the analysis pipeline so that the scan does not fail completely.
+
+The interface can show:
+
+* Original language
+* Native language name
+* Detection confidence
+* Translation status
+* Original text
+* English translation used for analysis
+
+---
+
+# 🧮 Risk Scoring System
+
+CyberLens AI uses a unified **0–100 risk score**.
+
+The score is mapped into five threat levels:
+
+|  Score | Level    |
+| -----: | -------- |
+|   0–20 | SAFE     |
+|  21–40 | LOW      |
+|  41–60 | MEDIUM   |
+|  61–80 | HIGH     |
+| 81–100 | CRITICAL |
+
+This allows different scanning modules to communicate their results using the same risk-level terminology.
+
+---
+
+# 🔑 Scam Keyword Engine
+
+The system uses a large manually curated scam-keyword lexicon containing weighted threat phrases.
+
+The keyword categories cover a broad range of scams, including:
+
+* Urgency and pressure tactics
+* Payment demands
+* Job and placement scams
+* OTP and credential theft
+* KYC fraud
+* Aadhaar and PAN scams
+* Lottery and prize scams
+* Banking impersonation
+* Investment and cryptocurrency scams
+* Romance scams
+* Government impersonation
+* Digital arrest scams
+* Courier and customs scams
+* UPI and QR-payment scams
+* Electricity and utility scams
+* Scholarship scams
+* E-commerce refund scams
+* Fake customer-care scams
+* AI voice/deepfake scams
+* MLM and referral scams
+
+Each keyword or phrase has a weighted importance depending on how strongly it indicates fraudulent activity.
+
+---
+
+# 🛡️ False-Positive Reduction
+
+CyberLens AI also includes mechanisms designed to reduce unnecessary false positives.
+
+### Negation Awareness
+
+The system checks for phrases such as:
+
+* "no"
+* "not"
+* "never"
+* "official website"
+* "no registration fee"
+* "never ask for OTP"
+
+This prevents a legitimate warning statement such as **"we never ask for your OTP"** from being incorrectly interpreted as an OTP request.
+
+### Safe Context
+
+Common legitimate words and phrases can reduce the effect of weak scam keywords when they appear in normal institutional or everyday contexts.
+
+### Combination Bonuses
+
+Certain suspicious keyword combinations receive additional scoring because multiple related indicators together are stronger evidence than an individual generic word.
+
+For example:
+
+**"registration fee" + "urgent"**
+
+is more suspicious than either phrase independently.
+
+---
+
+# 📧 Recruiter Email Analysis
+
+The recruiter-email analyzer provides multiple independent checks.
+
+It can identify:
+
+* Public/free email providers
+* Disposable email domains
+* Website-domain mismatch
+* Scam-related keywords
+* Random-looking email addresses
+* Excessive digits
+* Brand typosquatting
+
+The system uses a shared Shannon entropy implementation to identify email local parts that appear randomly generated.
+
+---
+
+# 🔤 Typosquatting Detection
+
+CyberLens AI includes typosquatting detection for domains and email addresses.
+
+The system uses:
+
+* Leetspeak normalization
+* Levenshtein edit distance
+* Domain-core extraction
+* Known-brand comparison
+
+For example, intentional substitutions such as:
+
+`amaz0n`
+
+can be normalized toward:
+
+`amazon`
+
+and compared with known legitimate brands.
+
+This helps detect domains that attempt to imitate well-known companies.
+
+---
+
+# 🏢 Company Identity Verification
+
+The Company Verifier removes generic company suffixes such as:
+
+* Pvt
+* Ltd
+* Inc
+* Technologies
+* Solutions
+* Global
+
+and focuses on distinctive company-name tokens.
+
+These tokens can then be compared with:
+
+* Website domain
+* Website title
+* Website visible text
+
+This creates a company identity match score.
+
+The system also performs cross-verification between the company name, recruiter email, and website.
+
+A genuine and mutually consistent combination receives stronger trust, while mismatches can increase the risk.
+
+---
+
+# 📄 PDF & OCR Processing
+
+The PDF pipeline uses multiple extraction strategies.
+
+For normal PDFs, native text extraction is attempted first.
+
+If the extracted content is weak — for example, because the PDF is essentially a scanned document — the system invokes OCR.
+
+Pages can be rendered at high resolution before OCR processing.
+
+The OCR pipeline includes:
+
+* Image enhancement
+* Tesseract OCR
+* Multiple page-segmentation configurations
+* OCR quality scoring
+* Post-processing
+* Merged-word correction
+
+For difficult pages, the system can escalate to a higher-resolution OCR pass.
+
+QR codes embedded inside PDF pages can also be detected independently.
+
+This means a PDF containing only an image or QR code can still be analyzed rather than automatically failing because it has no conventional text layer.
+
+---
+
+# 📊 Analytics & Statistics
+
+CyberLens AI maintains scan statistics including:
+
+* Total scans
+* Threats found
+* Safe scans
+* Critical threats
+* Risk scores
+* Scan history
+
+Each scan can be recorded with:
+
+* Scan type
+* Verdict
+* Risk score
+* Threat level
+* Timestamp
+
+These records are used to populate the Dashboard and Analytics sections.
+
+---
+
+# 💾 Model Persistence
+
+The trained models are saved as serialized artifacts using `joblib`.
+
+The text model artifact contains the trained:
+
+* TF-IDF pipeline
+* Ensemble classifier
+* Tuned threshold
+
+The URL model artifact contains the trained:
+
+* URL feature pipeline
+* Random Forest + Gradient Boosting ensemble
+* Tuned threshold
+* Learned TLD-risk information
+
+This allows the application to load the trained models without retraining them for every scan.
+
+---
+
+# 🗂️ File Architecture
+
+| File                           | Role                                                                              |
+| ------------------------------ | --------------------------------------------------------------------------------- |
+| `app.py`                       | Streamlit frontend, UI, navigation and result rendering                           |
+| `analyzer.py`                  | High-level analysis wrappers for text, URL, QR, OCR, PDF and company verification |
+| `ml_model.py`                  | Text scam classifier, preprocessing, training, inference and rule engine          |
+| `url_model.py`                 | URL phishing classifier, feature extraction, training and inference               |
+| `utils.py`                     | Keyword lexicon, risk scoring, URL heuristics and company/email analysis          |
+| `language_utils.py`            | Language detection, translation and language-related UI                           |
+| `styles.css`                   | Custom styling, animations and visual components                                  |
+| `scam_detector.pkl`            | Trained text-model artifact                                                       |
+| `phishing_url_detector.pkl`    | Trained URL-model artifact                                                        |
+| `scam.csv` / `sample_data.csv` | Text-model training data                                                          |
+| `url.csv`                      | URL-model training data                                                           |
+| `requirements.txt`             | Python dependencies                                                               |
+| `packages.txt`                 | System dependencies required for OCR                                              |
+
+---
+
+# ⚙️ Tech Stack Summary
+
+### Framework
+
+**Streamlit**
+
+Used to build the interactive cybersecurity dashboard and web interface.
+
+### Machine Learning / NLP
+
+* scikit-learn
+* TF-IDF
+* Logistic Regression
+* SGDClassifier
+* Random Forest
+* Gradient Boosting
+* VotingClassifier
+* CalibratedClassifierCV
+* NLTK
+
+### Computer Vision
+
+* OpenCV
+* Pillow
+* pytesseract
+* Tesseract OCR
+
+### PDF Processing
+
+* pdfplumber
+* PyPDF2
+* PyMuPDF
+
+### Visualization
+
+* Plotly
+
+### Language Processing
+
+* langdetect
+* googletrans
+* deep-translator
+
+### Persistence
+
+* joblib
+
+### URL Analysis
+
+* Python `urllib.parse`
+* Custom regular expressions
+* Structural URL features
+* Heuristic risk analysis
+
+---
+
+# 🎯 What Makes CyberLens AI Stand Out
+
+## 1. Multilingual-First Design
+
+CyberLens AI supports **Tamil, Hindi, Telugu, Kannada, Malayalam, Spanish, and English**, allowing suspicious content to be analyzed across multiple languages.
+
+The focus on regional languages is particularly useful for detecting scams that may not appear in English.
+
+---
+
+## 2. Multi-Modal Threat Detection
+
+Instead of focusing on only one input type, CyberLens AI can analyze:
+
+* Text
+* Messages
+* Images
+* PDFs
+* URLs
+* QR codes
+* Recruiter emails
+* Company websites
+
+These different input types are connected to appropriate analysis pipelines.
+
+---
+
+## 3. Two Dedicated ML Models
+
+CyberLens AI uses two independently designed machine-learning systems:
+
+### Text Model
+
+A **dual TF-IDF + soft-voting ensemble** designed for scam-message detection.
+
+### URL Model
+
+An **11-feature structural ensemble** using Random Forest and Gradient Boosting for phishing URL detection.
+
+Each model has its own tuned decision threshold.
+
+Current fine-tuned values:
+
+* **Text Model → Threshold 0.67 → F1 Score 97%**
+* **URL Model → Threshold 0.65 → F1 Score 100%**
+
+---
+
+## 4. Interpretable AI
+
+The system does not simply return a label.
+
+It can provide:
+
+* Suspicious keywords
+* Rule-based indicators
+* Important text features
+* URL structural features
+* Typosquatting information
+* Identity mismatches
+* Recommendations
+
+This helps users understand the reasoning behind a threat result.
+
+---
+
+## 5. Ensemble + Rule Hybrid
+
+CyberLens AI combines statistical machine learning with explicit cybersecurity rules.
+
+The ML models learn patterns from training data, while rule-based detection provides strong signals for known scam constructions.
+
+This combination helps the system detect both **learned patterns and explicit high-confidence threat signals**.
+
+---
+
+## 6. India-Specific Threat Intelligence
+
+The scam lexicon includes threat categories particularly relevant to Indian users, including:
+
+* OTP fraud
+* Aadhaar scams
+* PAN phishing
+* UPI scams
+* KYC fraud
+* Fake placement fees
+* Digital arrest scams
+* Fake government notices
+* Courier/customs scams
+* Electricity disconnection scams
+* Scholarship scams
+
+This makes the platform more relevant to regional scam scenarios.
+
+---
+
+## 7. Production-Style Security Interface
+
+The platform uses a dedicated cybersecurity visual identity with:
+
+* Dark threat-intelligence interface
+* Animated Matrix background
+* Radar visualization
+* Neural Risk Ring
+* Threat-level badges
+* Glass-style result cards
+* Live scan statistics
+* Analytics dashboard
+* Explainable threat reports
+
+The goal is to provide the experience of a professional security-analysis platform while keeping the interface accessible to ordinary users.
+
+---
+
+# 🚀 Overall System Workflow
+
+The complete CyberLens AI workflow can be summarized as:
+
+**User Input**
+
+↓
+
+**Input Identification**
+
+Text / URL / QR / Image / PDF / Company Details
+
+↓
+
+**Specialized Processing**
+
+NLP / URL Feature Extraction / QR Decoding / OCR / PDF Extraction / Email & Website Verification
+
+↓
+
+**AI + Rule-Based Analysis**
+
+Machine Learning + Heuristics + Threat Keywords + Structural Checks
+
+↓
+
+**Risk Calculation**
+
+Unified 0–100 Risk Score
+
+↓
+
+**Threat Classification**
+
+SAFE / LOW / MEDIUM / HIGH / CRITICAL
+
+↓
+
+**Explainable Threat Report**
+
+Verdict + Risk Score + Indicators + Recommendations
+
+↓
+
+**Analytics**
+
+Scan History + Threat Distribution + Statistics
+
+---
+
+## 🛡️ Final Summary
+
+CyberLens AI is designed as a **unified, multimodal cybersecurity intelligence platform** that combines machine learning, NLP, computer vision, OCR, URL analysis, QR decoding, multilingual processing, heuristic rules, and company verification.
+
+Its architecture separates text and URL intelligence into dedicated machine-learning models while connecting them through a common risk-scoring and threat-reporting framework.
+
+The current fine-tuned ML configuration uses:
+
+**Text Model → Threshold 0.67 → F1 Score 97%**
+
+**URL Model → Threshold 0.65 → F1 Score 100%**
+
+By combining these models with rule-based threat intelligence and multiple input-analysis pipelines, CyberLens AI aims to provide an accessible way for students, job seekers, and everyday users to identify suspicious digital content before it causes harm.
+
+**CyberLens AI — Detect the threat. Understand the risk. Stay safe.**
