@@ -1246,23 +1246,12 @@ body{{background:#020409;font-family:'Rajdhani',sans-serif;overflow:hidden}}
       <span class="t-sep">//</span>
       <span>⚠️ Threats Detected: <span class="t-warn">{_threats}</span></span>
       <span class="t-sep">//</span>
-      <span>🔍 ML Engine: <span class="t-safe">TF-IDF + LogReg</span></span>
-      <span class="t-sep">//</span>
-      <span class="t-danger">🚨 ALERT: Fake job scams rising 340% — Stay vigilant</span>
-      <span class="t-sep">//</span>
-      <span>🛡️ NLP Scam Patterns: <span class="t-safe">42 signatures loaded</span></span>
-      <span class="t-sep">//</span>
       <span>⚡ AI Threat Engine <span class="t-safe">ACTIVE</span></span>
       <span class="t-sep">//</span>
       <span>📊 Session Scans: <span class="t-safe">{_total_scans}</span></span>
       <span class="t-sep">//</span>
       <span>⚠️ Threats Detected: <span class="t-warn">{_threats}</span></span>
       <span class="t-sep">//</span>
-      <span>🔍 ML Engine: <span class="t-safe">TF-IDF + LogReg</span></span>
-      <span class="t-sep">//</span>
-      <span class="t-danger">🚨 ALERT: Fake job scams rising 340% — Stay vigilant</span>
-      <span class="t-sep">//</span>
-      <span>🛡️ NLP Scam Patterns: <span class="t-safe">42 signatures loaded</span></span>
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:.6rem">
@@ -2094,7 +2083,7 @@ elif selected == "About":
                     filter:drop-shadow(0 0 25px rgba(0,212,255,0.5));
                     animation:iconFloat 4s ease-in-out infinite;display:inline-block">🛡️</div>
         <div class="cyber-title" style="margin-bottom:0.75rem">Defending Users Against<br>Digital Threats</div>
-        <div class="cyber-subtitle">An AI-powered platform built to protect job seekers and everyday users from online scams</div>
+        <div class="cyber-subtitle">An AI-powered platform built to protect everyday users from online scams</div>
     </div>
     ''')
     H('<div class="cyber-divider"></div>')
@@ -2102,7 +2091,7 @@ elif selected == "About":
     section_header("What CyberLens Protects Against", "🎯")
     st.write("")
     protect_items = [
-        ("💼", "Fake Jobs",       "Fraudulent internship\nand job postings"),
+        ("🧠", "Smart Threat Scan", "Analyzes messages for\nhidden scam patterns"),
         ("🔗", "Phishing Links",  "Malicious URLs designed\nto steal credentials"),
         ("📷", "QR Scams",        "QR codes redirecting\nto fraud sites"),
         ("👤", "Fake Recruiters", "Impersonated HR &\nrecruiter identities"),
@@ -2159,13 +2148,14 @@ elif selected == "About":
                     color:var(--primary);letter-spacing:0.08em;text-transform:uppercase;
                     margin-bottom:1rem">The Problem Is Real</div>
         <div style="font-size:1rem;color:var(--text);line-height:1.9;max-width:680px;
-                    margin:0 auto;font-family:var(--font-body)">
-            Thousands of students and job seekers lose money to online scams every single day.
-            Fake internship offers, phishing emails, and fraudulent recruiters target vulnerable people
-            who simply want a better future.<br><br>
-            <strong style="color:var(--primary)">CyberLens AI was built to help identify suspicious digital threats
-            before victims are harmed</strong> — combining machine learning, NLP, and cybersecurity heuristics
-            into an accessible, real-time intelligence platform.
+                    margin:0 auto;font-family:var(--font-body)"> 
+            Online scams are becoming increasingly sophisticated, targeting people through 
+            suspicious messages, phishing links, fake websites, QR codes, images, documents, 
+            and other digital channels.<br><br> 
+            <strong style="color:var(--primary)">CyberLens AI was built to help identify suspicious 
+            digital threats before they can cause harm</strong> — combining machine learning, 
+            natural language processing, OCR, URL analysis, and cybersecurity heuristics 
+            into an accessible, real-time threat detection platform.
         </div>
     </div>
     ''')
@@ -2195,7 +2185,6 @@ elif selected == "About":
     H('''
     <div style="text-align:center;padding:2.5rem 0 1rem;color:var(--text-dim);
                 font-family:var(--font-mono);font-size:0.75rem;letter-spacing:0.06em">
-        Built with Python · Streamlit · scikit-learn · NLTK · Plotly<br><br>
         <span style="color:var(--primary);font-family:var(--font-display);
                      font-size:0.65rem;letter-spacing:0.15em">CYBERLENS AI</span>
         &nbsp;—&nbsp; Data Science Project by Puvisha S , Vidhya Priya P , Hemanthika M

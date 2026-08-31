@@ -196,22 +196,24 @@ def train_url_model(data_path: str = DATA_PATH) -> dict:
         lambda v: 1 if str(v).strip().lower() in {str(x).lower() for x in _POSITIVE_LABELS} else 0
     )
 
-    tld_risk_map, tld_prior = build_tld_risk_map(df, y)
-    binary_like_cols = {'has_https', 'has_ip'}
+    # Compute training features via the SAME live extraction function used by
+    # predict_url() (extract_url_only_features), instead of trusting url.csv's
+    # separately precomputed columns. This removes train/serve feature skew
+    # (e.g. num_subdirs and url_length were computed with different formulas
+    # in the CSV vs. what predict_url() computes live). No feature definitions
+    # change — this only changes which code computes them during training so
+    # it matches what already happens at prediction time.
+    live_feats = df['url'].apply(extract_url_only_features).apply(pd.Series)
+
+    tld_series = live_feats['_tld']
+    tld_risk_map, tld_prior = build_tld_risk_map(pd.DataFrame({'tld': tld_series}), y)
 
     X = pd.DataFrame(index=df.index)
     for col in FEATURE_COLUMNS:
         if col == 'tld_risk':
-            X[col] = df['tld'].fillna('').astype(str).str.lower().str.strip().map(tld_risk_map).fillna(tld_prior) \
-                if 'tld' in df.columns else tld_prior
-        elif col in df.columns:
-            if col in binary_like_cols:
-                X[col] = df[col].apply(_coerce_binary)
-            else:
-                X[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            X[col] = tld_series.fillna('').astype(str).str.lower().str.strip().map(tld_risk_map).fillna(tld_prior)
         else:
-            X[col] = 0
-
+            X[col] = live_feats[col]
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )

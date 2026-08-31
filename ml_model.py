@@ -141,7 +141,7 @@ def train_model(data_path: str = DATA_PATH) -> dict:
     df.dropna(subset=['text', 'label'], inplace=True)
     df['clean'] = df['text'].apply(preprocess_text)
 
-    X = df['clean'].values
+    X = df['clean'].astype(str).to_numpy()
     # Robust label mapping: accepts 'scam'/'phishing'/'spam'/1/'1' as positive class,
     # so scam.csv can use slightly different label spellings than the old sample data.
     _POSITIVE_LABELS = {'scam', 'phishing', 'spam', 'fraud', '1', 1, True}
@@ -246,8 +246,6 @@ def train_model(data_path: str = DATA_PATH) -> dict:
         'report':     report,
         'pipeline':   pipeline,
     }
-
-# ─── Inference ──────────────────────────────────────────────────────────────────
 
 @st.cache_resource
 def load_artifact():
