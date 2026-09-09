@@ -66,7 +66,6 @@ _SCAM_PATTERNS = [
     r'\b(click|login|verify).{0,30}(password|credentials|account)\b',
     r'work from home.{0,40}earn.{0,20}\$[\d,]+',
     r'\b(limited (seats|offer)|act fast|hurry)\b',
-    r'\b(package|parcel|delivery|shipment)\b.{0,40}\b(failed|incomplete|reschedule|confirm|update|returned|click|link)\b',
 ]
 _SCAM_RE = [re.compile(p, re.IGNORECASE) for p in _SCAM_PATTERNS]
 
@@ -74,29 +73,12 @@ def rule_based_scam_score(text: str) -> float:
     """Returns 0.0–1.0 based on how many scam rules fire.
     Saturates at 2 hits (was 3) so the signal is stronger on moderate matches.
     Each hit also carries weighted confidence via sigmoid scaling.
-
-    Kept for the UI / confidence / explanations / no-model fallback path —
-    NOT used to build the Keyword Score for blending (see raw_indicator_score).
     """
     hits = sum(1 for r in _SCAM_RE if r.search(text))
     if hits == 0:
         return 0.0
     # Sigmoid-style: 1 hit → ~0.57, 2 hits → ~0.72 (triggers stronger blend), 3+ → ~0.92+
     return round(min(1.0 - (1.0 / (1.0 + hits * 1.3)), 0.98), 4)
-
-# ── Raw indicator score (feeds the Keyword Score used for blending) ─────────────
-# Each of the _SCAM_PATTERNS indicators contributes an equal share of a
-# 20-point Raw Score. This is the "existing rule/indicator scoring mechanism"
-# (same _SCAM_RE indicators as rule_based_scam_score) restated on a 0–20 scale,
-# instead of the hits×1.3 sigmoid.
-MAX_RAW_SCORE = 20
-_RAW_POINTS_PER_HIT = MAX_RAW_SCORE / len(_SCAM_PATTERNS)  # 2.5 points per matched indicator
-
-def raw_indicator_score(text: str) -> float:
-    """Sum matched scam indicators into a Raw Score, capped at MAX_RAW_SCORE (20)."""
-    hits = sum(1 for r in _SCAM_RE if r.search(text))
-    raw_score = hits * _RAW_POINTS_PER_HIT
-    return round(min(raw_score, MAX_RAW_SCORE), 4)
 
 # ─── Text Preprocessing ─────────────────────────────────────────────────────────
 
@@ -322,34 +304,17 @@ def predict(text: str) -> dict:
     proba    = pipeline.predict_proba([clean])[0]
     ml_prob  = float(proba[1])
 
-    # ── Step 1: Raw Score (max 20) from the existing indicator mechanism ────────
-    raw_score = raw_indicator_score(text)
+    # NEW: Zero floor for completely safe text
+    CLEAN_ML_THRESHOLD = 0.15
 
-    # ── Step 2: Normalize Raw Score → Keyword Score (0–100) ─────────────────────
-    keyword_score = (raw_score / MAX_RAW_SCORE) * 100
-    keyword_score = min(max(keyword_score, 0), 100)
+    if rule_score == 0.0 and ml_prob < CLEAN_ML_THRESHOLD:
+        blended_prob = 0.0
 
-    # ── Step 3: Dynamic ML/Keyword weighting based on Keyword Score ─────────────
-    if keyword_score <= 10:
-        ml_weight = 0.70
-        keyword_weight = 0.30
-
-    elif keyword_score <= 59:
-        ml_weight = 0.45
-        keyword_weight = 0.55
+    elif rule_score >= 0.70:
+        blended_prob = round(0.35 * ml_prob + 0.65 * rule_score, 4)
 
     else:
-        ml_weight = 0.30
-        keyword_weight = 0.70
-
-    # ── Step 4: Final blended score (0–100), capped, then converted to 0–1 ──────
-    blended_score = (
-        (ml_prob * 100 * ml_weight)
-        + (keyword_score * keyword_weight)
-    )
-    blended_score = min(blended_score, 100)
-
-    blended_prob = round(blended_score / 100, 4)
+        blended_prob = round(0.50 * ml_prob + 0.50 * rule_score, 4)
 
     label = "scam" if blended_prob >= threshold else "legitimate"
     confidence = round(abs(blended_prob - 0.5) * 2.0, 4)
