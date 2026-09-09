@@ -66,6 +66,7 @@ _SCAM_PATTERNS = [
     r'\b(click|login|verify).{0,30}(password|credentials|account)\b',
     r'work from home.{0,40}earn.{0,20}\$[\d,]+',
     r'\b(limited (seats|offer)|act fast|hurry)\b',
+    r'\b(package|parcel|delivery|shipment)\b.{0,40}\b(failed|incomplete|reschedule|confirm|update|returned|click|link)\b',
 ]
 _SCAM_RE = [re.compile(p, re.IGNORECASE) for p in _SCAM_PATTERNS]
 
