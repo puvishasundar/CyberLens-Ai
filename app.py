@@ -1614,32 +1614,13 @@ elif selected == "Analyzer":
                     })
                     H(badge_html)
 
-                    # Keep the original available, but make the English translation
-                    # clearly visible because it is the actual text sent to the
-                    # English scam-analysis pipeline.
+                    # Original text in a native Streamlit expander (no HTML needed)
                     if result.get('original_text') and result['original_text'] != result.get('translated_text'):
                         with st.expander(f"📄 Original {result.get('lang_name', '')} text"):
                             st.text(result['original_text'])
-
                     if result.get('was_translated') and result.get('translated_text'):
-                        H(f'''<div style="margin:0.75rem 0 1rem;padding:0.9rem 1rem;
-                            background:rgba(0,212,255,0.055);border:1px solid rgba(0,212,255,0.22);
-                            border-left:3px solid #00d4ff;border-radius:10px;">
-                            <div style="font-family:var(--font-display,Rajdhani,sans-serif);
-                                font-size:0.72rem;font-weight:800;letter-spacing:.09em;
-                                color:#00d4ff;text-transform:uppercase;margin-bottom:.45rem;">
-                                🔤 English Translation — Used for Analysis
-                            </div>
-                            <div style="font-family:var(--font-body,Inter,sans-serif);font-size:.92rem;
-                                line-height:1.65;color:#c8d8e8;white-space:pre-wrap;">
-                                {_html.escape(result['translated_text'])}
-                            </div>
-                        </div>''')
-                    elif result.get('lang_code') not in ('en', 'unknown') and result.get('translation_error'):
-                        H(f'''<div class="alert-warning" style="margin:0.75rem 0 1rem;">
-                            ⚠️ English translation was unavailable. The original text was analysed as a fallback.
-                            <span style="opacity:.8">{_html.escape(str(result.get('translation_error')))}</span>
-                        </div>''')
+                        with st.expander("🔤 Translated text used for analysis"):
+                            st.text(result['translated_text'])
 
                 elif result.get('lang_code') == 'en':
                     H(language_badge_html({
@@ -1655,28 +1636,6 @@ elif selected == "Analyzer":
                         f"{'s' if len(combined['urls_found']) != 1 else ''} detected below)",
                         "📝",
                     )
-
-                # Complete-content contact/QR visibility. URLs are rendered by
-                # the automatic URL-analysis cards below; email and phone
-                # elements are shown here so the text scan does not hide them.
-                _emails = result.get('emails_detected', [])
-                _phones = result.get('phones_detected', [])
-                _contact_flags = result.get('contact_indicators', [])
-                _qr_flags = result.get('qr_indicators', [])
-                if _emails or _phones or _contact_flags or _qr_flags:
-                    _parts = []
-                    if _emails:
-                        _parts.append(f'<div class="data-row"><span class="dr-icon">📧</span><span class="dr-label">Email(s)</span><span class="dr-val">{_html.escape(", ".join(_emails))}</span></div>')
-                    if _phones:
-                        _parts.append(f'<div class="data-row"><span class="dr-icon">📞</span><span class="dr-label">Phone number(s)</span><span class="dr-val">{_html.escape(", ".join(_phones))}</span></div>')
-                    if _qr_flags:
-                        _parts.append(f'<div class="data-row"><span class="dr-icon">▣</span><span class="dr-label">QR indicators</span><span class="dr-val">{_html.escape(", ".join(_qr_flags))}</span></div>')
-                    for _flag in _contact_flags:
-                        _parts.append(f'<div class="data-row"><span class="dr-icon">🚩</span><span class="dr-label">Contact flag</span><span class="dr-val" style="color:#f97316">{_html.escape(_flag)}</span></div>')
-                    H('''<div class="cyber-divider" style="margin:1.25rem 0"></div>
-                       <div class="section-header">📇 Contact &amp; QR Checks</div>
-                       <div style="margin-top:.5rem">''' + ''.join(_parts) + '''</div>''')
-
                 render_full_result(result)
 
                 # ── Auto-triggered URL Analysis for every link found in the text ──

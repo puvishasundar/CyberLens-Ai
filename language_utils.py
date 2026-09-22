@@ -106,26 +106,24 @@ def detect_language(text: str) -> dict:
         }
 
     # 2️⃣  langdetect library
-    # Accept only the languages explicitly supported by CyberLens.
     try:
         from langdetect import detect, detect_langs
         langs = detect_langs(text)
         if langs:
-            top = langs[0]
+            top  = langs[0]
             code = top.lang
             conf = round(float(top.prob), 3)
-            if code in SUPPORTED_LANG_CODES:
-                meta = SUPPORTED_LANGUAGES[code]
-                return {
-                    'lang_code': code, 'lang_name': meta['name'],
-                    'native_name': meta['native'], 'flag': meta['flag'],
-                    'confidence': conf, 'is_supported': True,
-                    'method': 'langdetect',
-                }
+            # Map some langdetect codes to ours (e.g. 'zh-cn' → unsupported)
+            is_sup = code in SUPPORTED_LANG_CODES
+            meta   = SUPPORTED_LANGUAGES.get(code, {})
             return {
-                'lang_code': code, 'lang_name': code.upper(), 'native_name': '',
-                'flag': '🏳️', 'confidence': conf, 'is_supported': False,
-                'method': 'langdetect',
+                'lang_code':   code,
+                'lang_name':   meta.get('name', code.upper()),
+                'native_name': meta.get('native', ''),
+                'flag':        meta.get('flag', '🏳️'),
+                'confidence':  conf,
+                'is_supported':is_sup,
+                'method':      'langdetect',
             }
     except Exception:
         pass
@@ -230,7 +228,7 @@ def detect_and_translate(text: str) -> dict:
     detection = detect_language(text)
     lang_code = detection['lang_code']
 
-    if lang_code == 'en' or lang_code == 'unknown' or lang_code not in SUPPORTED_LANG_CODES:
+    if lang_code == 'en' or lang_code == 'unknown':
         return {
             'original_text':      text,
             'translated_text':    text,
