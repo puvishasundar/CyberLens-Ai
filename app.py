@@ -600,11 +600,15 @@ def render_full_result(result: dict) -> None:
 
     # ── Use st.components to render the full result card (SVG safe) ───────────
     # Dynamic height: base + extras for keywords and recommendations
+    # NOTE: _kw_rows is still computed (kept intact — it's derived from `kws`,
+    # which continues to be used for backend risk scoring elsewhere) but is no
+    # longer added into _height, since the Suspicious Indicators section that
+    # used to occupy that vertical space is no longer rendered in the UI.
     _kw_rows  = max(1, len(kws) // 4)
     _rec_rows = len(recs)
     _url_rows = len(url_detail_items) if url_detail_items else 0
     _text_extra = min(240, len(_raw_text) // 4) if _raw_text else 40
-    _height   = 700 + (_kw_rows * 40) + (_rec_rows * 65) + (_url_rows * 48) + (_ai_rows_count * 48) + 260 + _text_extra
+    _height   = 700 + (_rec_rows * 65) + (_url_rows * 48) + (_ai_rows_count * 48) + 260 + _text_extra
 
     import streamlit.components.v1 as components
     components.html(f"""
@@ -744,10 +748,6 @@ def render_full_result(result: dict) -> None:
   </div>
 
   <div class="divider"></div>
-
-  <!-- Suspicious Indicators -->
-  <div class="section-hdr">⚡ Suspicious Indicators</div>
-  <div style="line-height:2.4;margin-top:.25rem">{kw_chips_html}</div>
 
   {url_details_html}
 
