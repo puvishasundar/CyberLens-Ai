@@ -1600,16 +1600,35 @@ elif selected == "Analyzer":
                         'was_translated':     result.get('was_translated', False),
                         'translation_method': result.get('translation_method', ''),
                         'translation_success':result.get('translation_success', False),
+                        'translation_error':  result.get('translation_error'),
                     })
                     H(badge_html)
+
+                    # ── English translation — shown directly in the results,   ──
+                    # not tucked away, so the user always sees what was analysed.
+                    if result.get('translation_success') and result.get('translated_text'):
+                        H(f'''
+                        <div style="
+                            background:rgba(0,255,157,0.06);
+                            border:1px solid rgba(0,255,157,0.25);
+                            border-radius:12px;padding:0.75rem 1rem;
+                            margin-bottom:0.75rem;">
+                            <div style="font-family:monospace;font-size:0.75rem;
+                                        color:#00ff9d;letter-spacing:0.03em;margin-bottom:0.35rem">
+                                🔤 ENGLISH TRANSLATION
+                            </div>
+                            <div style="font-size:0.9rem;color:#e5f5ef;line-height:1.5">
+                                {result['translated_text']}
+                            </div>
+                        </div>''')
+                    elif result.get('lang_code') != 'en' and not result.get('translation_success'):
+                        H('<div class="alert-warning" style="margin-bottom:0.75rem">'
+                          '⚠️ Translation unavailable — the original-language text was analysed instead.</div>')
 
                     # Original text in a native Streamlit expander (no HTML needed)
                     if result.get('original_text') and result['original_text'] != result.get('translated_text'):
                         with st.expander(f"📄 Original {result.get('lang_name', '')} text"):
                             st.text(result['original_text'])
-                    if result.get('was_translated') and result.get('translated_text'):
-                        with st.expander("🔤 Translated text used for analysis"):
-                            st.text(result['translated_text'])
 
                 elif result.get('lang_code') == 'en':
                     H(language_badge_html({

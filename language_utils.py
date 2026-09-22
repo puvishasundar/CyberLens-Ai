@@ -176,7 +176,24 @@ def translate_to_english(text: str, src_lang: str) -> dict:
             'error': None,
         }
 
-    # 1️⃣  deep-translator (GoogleTranslator)
+    _errors = []
+
+    # 1️⃣  googletrans (free, unofficial Google Translate API)
+    try:
+        from googletrans import Translator
+        translated = Translator().translate(text, src=src_lang, dest='en').text
+        if translated and translated.strip():
+            return {
+                'translated_text': translated,
+                'success': True,
+                'method': 'googletrans',
+                'error': None,
+            }
+    except Exception as e1:
+        _errors.append(f'googletrans: {e1}')
+
+    # 2️⃣  deep-translator (GoogleTranslator) — fallback if googletrans is
+    # missing, incompatible, or rate-limited
     try:
         from deep_translator import GoogleTranslator
         translated = GoogleTranslator(source=src_lang, target='en').translate(text)
@@ -188,16 +205,16 @@ def translate_to_english(text: str, src_lang: str) -> dict:
                 'error': None,
             }
     except Exception as e2:
-        _err2 = str(e2)
-    else:
-        _err2 = None
+        _errors.append(f'deep_translator: {e2}')
 
     # 3️⃣  Passthrough — translation unavailable, return original
     return {
         'translated_text': text,
         'success': False,
         'method': 'passthrough',
-        'error': 'Translation backends unavailable. Install googletrans or deep-translator.',
+        'error': 'Translation backends unavailable (' + '; '.join(_errors) + ').'
+                 if _errors else
+                 'Translation backends unavailable. Install googletrans or deep-translator.',
     }
 
 
@@ -356,15 +373,19 @@ def language_badge_html(lang_result: dict) -> str:
     t_success = lang_result.get('translation_success', False)
 
     native_str = f' · {native}' if native and native != lang_name else ''
+    # A translation was *attempted* whenever the source language isn't English —
+    # regardless of whether it ultimately succeeded — so we can always tell the
+    # user what happened instead of staying silent on failure.
+    attempted  = was_trans or bool(method) and method != 'passthrough' or lang_result.get('translation_error')
     t_color    = '#00ff9d' if t_success else '#ffb340'
-    t_label    = f'✅ Translated via {method}' if (was_trans and t_success) else (
-                 f'⚠️ Translation unavailable — original text analysed' if was_trans else '')
+    t_label    = (f'✅ Translated via {method}' if t_success else
+                  '⚠️ Translation unavailable — original text analysed') if attempted else ''
 
     trans_row = f'''
         <div style="margin-top:0.35rem;font-size:0.72rem;color:{t_color};
                     font-family:monospace;letter-spacing:0.03em">
             🌐 {t_label}
-        </div>''' if was_trans else ''
+        </div>''' if attempted else ''
 
     return f'''
     <div style="
