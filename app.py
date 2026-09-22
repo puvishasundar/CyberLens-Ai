@@ -1,2211 +1,2248 @@
-# app.py — CyberLens AI  ·  Premium Redesign
-# AI-powered cybersecurity intelligence dashboard
-# Run: streamlit run app.py
+# analyzer.py — CyberLens AI
+# High-level analysis wrappers used by app.py
 
-import os, time, datetime, json, html as _html
-import streamlit as st
-import plotly.graph_objects as go
-from streamlit_local_storage import LocalStorage
+import io
+import logging
+import os
+import re
+import time
+import numpy as np
+import pytesseract
+import requests
+import urllib3
+from bs4 import BeautifulSoup
 
-# Local modules
-from analyzer import (
-    analyse_text, analyse_text_full, analyse_url_full, analyse_qr,
-    analyse_ocr_image, analyse_pdf, analyse_company
+# Disable insecure request warning for verify=False on dodgy domains
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ─── Logging ────────────────────────────────────────────────────────────────────
+# Uses the root logging config set up in app.py (logging.basicConfig). If this
+# module is ever imported standalone (e.g. in a test script), it still logs to
+# the console at INFO level by default.
+logger = logging.getLogger("cyberlens.analyzer")
+
+_WIN_TESS = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+if os.name == 'nt':
+    pytesseract.pytesseract.tesseract_cmd = _WIN_TESS
+
+from utils import (
+    score_keywords, compute_risk_level, normalise_score,
+    analyse_url, analyse_recruiter_email, analyse_company_name,
+    analyse_email_full, verify_company_identity, _domain_core,
+    SCAM_KEYWORDS, SHORTENER_DOMAINS
 )
-from utils import update_stats, avg_risk, make_empty_stats, compute_risk_level
-from language_utils import language_badge_html, SUPPORTED_LANGUAGES
-
-
-# ══════════════════════════════════════════════════════════════════
-# H — defined immediately after imports so every call below works
-# ══════════════════════════════════════════════════════════════════
-def H(html: str) -> None:
-    st.markdown(html, unsafe_allow_html=True)
-
-# ══════════════════════════════════════════════════════════════════
-# PAGE CONFIG
-# ══════════════════════════════════════════════════════════════════
-st.set_page_config(
-    page_title="CyberLens AI",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="collapsed",
+from ml_model import predict as ml_predict, get_feature_importance
+from url_model import predict_url as url_ml_predict, get_feature_importance_url
+from language_utils import detect_and_translate, tag_segments
+from trusted_companies import (
+    match_trusted_domain, detect_brand_impersonation, company_name_matches_brand,
 )
 
-# ── Inject CSS (cache-busted via file mtime) ─────────────────────
-_CSS_PATH = os.path.join(os.path.dirname(__file__), "styles.css")
-if os.path.exists(_CSS_PATH):
-    _css_version = int(os.path.getmtime(_CSS_PATH))
-    with open(_CSS_PATH, encoding="utf-8") as f:
-        _css_content = f.read()
-    st.markdown(f"<style>/* v={_css_version} */\n{_css_content}</style>", unsafe_allow_html=True)
-
-# ── Additional UI improvements CSS ───────────────────────────────
-st.markdown("""<style>
-/* ── Unified nav hidden-buttons override ── */
-.cl-nav-hidden-btns {
-    height: 0 !important;
-    overflow: hidden !important;
-    display: block;
-}
-.cl-nav-hidden-btns > div,
-.cl-nav-hidden-btns [data-testid="stHorizontalBlock"] {
-    height: 0 !important;
-    min-height: 0 !important;
-    overflow: hidden !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    gap: 0 !important;
-}
-.cl-nav-hidden-btns button {
-    height: 0 !important;
-    min-height: 0 !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    border: none !important;
-    overflow: hidden !important;
-    opacity: 0 !important;
-    font-size: 0 !important;
+_RECS = {
+    'CRITICAL': [
+        '🚨 Do NOT respond to or engage with this message.',
+        '🔒 Never share personal information, bank details, or OTPs.',
+        '📢 Report this to cybercrime.gov.in or your local cyber cell.',
+        '🗑️  Block and delete the sender immediately.',
+        '🔍 Warn others in your network about this scam.',
+    ],
+    'HIGH': [
+        '⚠️  Exercise extreme caution — multiple red flags detected.',
+        '🔎 Independently verify the company via official channels.',
+        '💳 Never pay any fee to secure a job or internship.',
+        '📞 Call the company directly using a number from their official website.',
+        '📧 Check if the email domain matches the official company domain.',
+    ],
+    'MEDIUM': [
+        '🧐 Treat with moderate caution — some suspicious elements found.',
+        '🔍 Research the company on LinkedIn and Glassdoor.',
+        '❓ Ask for an official offer letter on company letterhead.',
+        '🏦 Never transfer money without verified paperwork.',
+    ],
+    'LOW': [
+        '✅ Low risk — still perform basic due diligence.',
+        '🔍 Cross-check recruiter details on LinkedIn.',
+        '📋 Request a formal job description and offer letter.',
+    ],
+    'SAFE': [
+        '✅ Content appears legitimate.',
+        '📝 Keep documentation of all communications.',
+        '🔒 Always protect your personal information.',
+    ],
 }
 
-/* ── Neural Risk Ring Result Card ── */
-.ai-result-card {
-    background:rgba(255,255,255,0.025);
-    border:1px solid rgba(var(--rc,0,212,255),0.18);
-    border-radius:20px;
-    padding:1.75rem 2rem;
-    margin-top:1.25rem;
-    box-shadow:0 0 40px var(--glow,rgba(0,212,255,0.1));
-    animation:resultFadeIn .5s ease both;
-    position:relative;
-    overflow:hidden;
-}
-.ai-result-card::before {
-    content:'';
-    position:absolute;
-    top:-60px;right:-60px;
-    width:200px;height:200px;
-    background:radial-gradient(circle,var(--glow,rgba(0,212,255,.08)),transparent 70%);
-    pointer-events:none;
-}
-@keyframes resultFadeIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+def get_recommendations(level: str) -> list:
+    return _RECS.get(level, _RECS['SAFE'])
 
-.arc-row {
-    display:flex;
-    align-items:flex-start;
-    gap:2rem;
-    flex-wrap:wrap;
+def analyse_text(text: str) -> dict:
+    if not text or not text.strip():
+        return {'error': 'No text provided'}
+
+    lang_result   = detect_and_translate(text)
+    analysis_text = lang_result['translated_text']
+
+    ml_result    = ml_predict(analysis_text)
+    ml_scam_prob = ml_result['probability']
+    print("ML Scam Probability:", ml_scam_prob)
+    kw_translated = score_keywords(analysis_text)
+    kw_original   = score_keywords(lang_result['original_text'])
+    kw_result     = kw_translated if kw_translated['score'] >= kw_original['score'] else kw_original
+    kw_raw        = kw_result['score']
+    kw_norm       = normalise_score(kw_raw, ceiling=20.0)
+
+    if kw_norm >= 60:
+        ml_weight, kw_weight = 0.30, 0.70
+    elif kw_norm <= 10:
+        ml_weight, kw_weight = 0.70, 0.30
+    else:
+        ml_weight, kw_weight = 0.45, 0.55
+
+    blended = (ml_scam_prob * 100 * ml_weight) + (kw_norm * kw_weight)
+    blended = min(round(blended, 1), 100.0)
+
+    # Zero-floor for completely safe text
+    ML_SAFE_THRESHOLD = 15.0
+
+    if kw_raw == 0 and (ml_scam_prob * 100) < ML_SAFE_THRESHOLD:
+        blended = 0.0
+    
+    risk_info   = compute_risk_level(blended)
+    level       = risk_info['level']
+    confidence  = round(ml_result['confidence'] * 100, 1)
+
+    top_features = get_feature_importance(analysis_text, top_n=8)
+    feature_words = [f[0] for f in top_features]
+
+    all_suspicious = list(set(kw_result['found'] + feature_words))[:12]
+
+    top_kw_hits = kw_result['found'][:4]
+
+    if level == 'CRITICAL':
+        verdict = (
+            f"🚨 This content shows strong indicators of a scam or phishing attempt, "
+            f"including: {', '.join(top_kw_hits)}. Do not act on any requests within it."
+            if top_kw_hits else
+            "🚨 This content shows strong indicators of a scam or phishing attempt based on AI pattern analysis. "
+            "Do not act on any requests within it."
+        )
+    elif level == 'HIGH':
+        verdict = (
+            f"⚠️ This content shows strong indicators of a scam or phishing attempt, "
+            f"such as: {', '.join(top_kw_hits)}. Treat it with serious caution."
+            if top_kw_hits else
+            "⚠️ This content shows strong indicators of a scam or phishing attempt. Treat it with serious caution."
+        )
+    elif level == 'MEDIUM':
+        verdict = (
+            f"🧐 This content contains some suspicious elements worth investigating, "
+            f"including: {', '.join(top_kw_hits)}. Verify before taking any action."
+            if top_kw_hits else
+            "🧐 This content contains some suspicious elements worth investigating. Verify before taking any action."
+        )
+    elif level == 'LOW':
+        verdict = (
+            "🔵 Only minor risk factors were identified. This content appears largely legitimate "
+            "but still warrants basic verification."
+        )
+    else:
+        verdict = "✅ No major suspicious indicators were detected. This content appears to be safe."
+
+    return {
+        'risk_score':       blended,
+        'confidence':       confidence,
+        'ml_probability':   round(ml_scam_prob * 100, 1),
+        'risk_level':       level,
+        'risk_color':       risk_info['color'],
+        'risk_emoji':       risk_info['emoji'],
+        'verdict':          verdict,
+        'suspicious_kws':   all_suspicious,
+        'keyword_hits':     kw_result['found'],
+        'recommendations':  get_recommendations(level),
+        'ml_label':         ml_result['label'],
+        'scan_type':        'Text Analysis',
+        'lang_code':        lang_result['lang_code'],
+        'lang_name':        lang_result['lang_name'],
+        'lang_native':      lang_result['native_name'],
+        'lang_flag':        lang_result['flag'],
+        'lang_confidence':  lang_result['confidence'],
+        'was_translated':   lang_result['was_translated'],
+        'translated_text':  lang_result['translated_text'],
+        'original_text':    lang_result['original_text'],
+        'translation_method': lang_result['translation_method'],
+        'translation_success': lang_result['translation_success'],
+        'translation_error': lang_result.get('translation_error'),
+    }
+
+# ─── URL detection inside free-form text (Requirement: TEXT ANALYSIS) ───────
+# Matches explicit schemes (http/https), "www."-prefixed hosts, and bare
+# domain-like tokens (e.g. "bit.ly/xyz", "amaz0n-secure.com") so pasted
+# messages, emails, and SMS content all get their embedded links caught.
+_TEXT_URL_RE = re.compile(
+    r'(?:(?:https?://)[^\s<>"\')]+)'          # explicit http(s)://...
+    r'|(?:www\.[^\s<>"\')]+)'                 # www.example.com/...
+    r'|(?:\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'
+    r'\.[a-zA-Z]{2,24}(?:/[^\s<>"\')]*)?\b)',  # bare domain[/path]
+    re.IGNORECASE,
+)
+
+# Trailing punctuation that regularly gets swept up when a URL ends a
+# sentence ("visit http://evil.com." or "...secure.com!").
+_URL_TRAILING_PUNCT = '.,;:!?)"\''
+
+# Used to strip full email addresses out of the text *before* URL scanning,
+# so "john.doe@example.com" isn't mis-split into two fake bare-domain hits
+# ("john.doe" and "example.com").
+_EMAIL_INLINE_RE = re.compile(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}')
+
+
+def extract_urls_from_text(text: str) -> list:
+    """
+    Find and return every distinct URL/domain mentioned inside a block of
+    free text, in first-seen order. Filters out email addresses and
+    obvious non-URL numeric tokens (e.g. "3.14", "v2.0") that would
+    otherwise match the bare-domain fallback pattern.
+    """
+    if not text:
+        return []
+
+    text_no_emails = _EMAIL_INLINE_RE.sub(' ', text)
+    candidates = _TEXT_URL_RE.findall(text_no_emails)
+    seen, urls = set(), []
+
+    for raw in candidates:
+        u = raw.strip().rstrip(_URL_TRAILING_PUNCT)
+        if not u:
+            continue
+
+        # Belt-and-braces: skip anything that still looks email-shaped.
+        if _EMAIL_RE.match(u) or ('@' in u):
+            continue
+
+        host_part = re.sub(r'^https?://', '', u, flags=re.IGNORECASE).split('/')[0]
+        tld_candidate = host_part.rsplit('.', 1)[-1] if '.' in host_part else ''
+
+        # Reject bare numeric-only "domains" (version numbers, decimals, IDs)
+        # unless it's a proper http(s)/www URL, which we always trust.
+        if not u.lower().startswith(('http://', 'https://', 'www.')):
+            if not tld_candidate.isalpha() or len(tld_candidate) < 2:
+                continue
+            if host_part.replace('.', '').isdigit():
+                continue
+
+        normalised = u if u.lower().startswith(('http://', 'https://')) else f'http://{u}'
+
+        key = normalised.lower()
+        if key not in seen:
+            seen.add(key)
+            urls.append(normalised)
+
+    return urls
+
+
+def analyse_text_full(text: str, max_urls: int = 3) -> dict:
+    """
+    Orchestrator for the Text Analysis module.
+
+    Requirement: if the pasted text contains one or more URLs, run BOTH
+    Text Analysis (on the full message) and full URL Analysis (on each
+    embedded link -- website content extraction, threat score, scam
+    explanation, suspicious indicators, extracted website text), then
+    return everything needed to display a single combined report,
+    without the user having to switch modules.
+
+    Returns:
+        {
+            'text_result':  <dict from analyse_text()>,
+            'urls_found':   [<str>, ...],
+            'url_results':  [{'url': <str>, **<dict from analyse_url_full()>}, ...],
+            'has_urls':     bool,
+            'scan_type':    'Text Analysis',
+        }
+    """
+    text_result = analyse_text(text)
+
+    urls_found = extract_urls_from_text(text)
+    url_results = []
+    for u in urls_found[:max_urls]:
+        try:
+            r = analyse_url_full(u)
+        except Exception as e:
+            r = {'error': f'URL analysis failed for {u}: {e}'}
+        r = dict(r)
+        r['url'] = r.get('url', u)
+        r['scan_type'] = 'URL Scanner'   # so the UI renders the full URL card
+        url_results.append(r)
+
+    return {
+        'text_result':  text_result,
+        'urls_found':   urls_found,
+        'url_results':  url_results,
+        'has_urls':     bool(urls_found),
+        'scan_type':    'Text Analysis',
+    }
+
+
+SCAM_CONTENT_PHRASES = [
+    "congratulations! you won", "congratulations, you won", "you have won",
+    "you've won", "claim your prize", "win an iphone", "win a free",
+    "registration fee", "processing fee required", "verify your account",
+    "update your bank details", "update your payment details",
+    "limited time offer", "urgent action required", "click here now",
+    "act now", "account has been suspended", "confirm your identity",
+    "you have been selected", "free gift", "lottery winner",
+    "otp verification required", "bank account blocked", "confirm your password",
+    "unusual activity detected", "your account will be closed",
+    "enter your upi pin", "scan to receive", "scan qr to receive",
+    "accept collect request", "upi id blocked", "upi deactivated",
+    "scan and win", "scan to claim", "qr code expired",
+    "complete your kyc", "kyc expired", "aadhaar blocked", "pan card suspended",
+    "digital arrest", "arrest warrant", "cbi notice", "cyber crime notice",
+    "legal action will be taken", "court notice", "fir has been filed",
+    "income tax notice", "tds refund", "gst refund",
+    "pre-approved loan", "instant loan approved", "guaranteed returns",
+    "double your money", "risk free investment", "crypto trading signal",
+    "sure shot profit", "multibagger stock",
+    "no interview required", "joining fee", "offer letter fee",
+    "work from home earning", "captcha typing job", "whatsapp hr",
+    "customs clearance fee", "parcel on hold", "pay to release your parcel",
+    "delivery failed pay", "package will be destroyed",
+    "electricity disconnected tonight", "pay electricity bill immediately",
+    "power disconnection notice", "update your meter details",
+    "scholarship approved", "scholarship processing fee", "fee waiver offer",
+    "pay to confirm your order", "order refund pending", "huge discount today only",
+    "mega sale 90% off",
+    "this is your son", "emergency accident money", "kidnapped call now",
+    "voice message urgent",
+    "withdraw your winnings", "refer app earn cash", "spin and win",
+    "click and earn daily",
+    "call this number for refund", "fake customer care agent",
+]
+
+_BOILERPLATE_TAGS = ['script', 'style', 'noscript', 'head', 'svg', 'iframe',
+                     'nav', 'footer', 'header', 'aside', 'form']
+
+# Short, generic nav/menu strings that add noise but no signal. Anything
+# exactly matching one of these (case-insensitive) after stripping is dropped.
+_NAV_JUNK = {
+    'home', 'menu', 'search', 'login', 'sign in', 'sign up', 'cart', 'close',
+    'skip to content', 'toggle navigation', 'privacy policy', 'terms of service',
+    'cookie policy', 'accept', 'accept all', 'accept cookies', 'reject all',
+    'subscribe', 'back to top', '×', '»', '«',
 }
 
-/* Neural ring */
-.neural-ring-wrap {
-    display:flex;
-    flex-direction:column;
-    align-items:center;
-    flex-shrink:0;
-    position:relative;
-}
-.neural-ring {
-    width:130px;height:130px;
-    transform:rotate(-90deg);
-    filter:drop-shadow(0 0 8px var(--rc,#00d4ff));
-    animation:ringDraw 1.2s cubic-bezier(.4,0,.2,1) both .1s;
-}
-@keyframes ringDraw{from{opacity:0;transform:rotate(-90deg) scale(.85)}to{opacity:1;transform:rotate(-90deg) scale(1)}}
-.neural-ring-inner {
-    position:absolute;
-    top:50%;left:50%;
-    transform:translate(-50%,-52%);
-    text-align:center;
-}
-.neural-score {
-    font-family:var(--font-display,Orbitron,monospace);
-    font-size:1.75rem;
-    font-weight:800;
-    line-height:1;
-    text-shadow:0 0 12px currentColor;
-}
-.neural-label {
-    font-family:var(--font-mono,monospace);
-    font-size:0.65rem;
-    color:var(--text-dim,#5a7a9a);
-    letter-spacing:.06em;
-}
-.neural-ring-caption {
-    margin-top:.4rem;
-    font-family:var(--font-display,Rajdhani,sans-serif);
-    font-size:.58rem;
-    letter-spacing:.18em;
-    color:var(--text-dim,#5a7a9a);
-    text-transform:uppercase;
-}
 
-/* Verdict column */
-.verdict-col { flex:1;min-width:220px; }
+def _extract_visible_text(html_content: str) -> str:
+    """
+    Single-pass, de-duplicated visible-text extraction.
 
-.ai-verdict-badge {
-    display:flex;
-    align-items:center;
-    gap:1rem;
-    padding:.9rem 1.2rem;
-    background:rgba(255,255,255,.03);
-    border:1px solid rgba(255,255,255,.06);
-    border-left:3px solid var(--c,#00d4ff);
-    border-radius:12px;
-    box-shadow:0 0 20px var(--g,rgba(0,212,255,.1));
-    margin-bottom:1rem;
-    animation:badgeIn .5s ease both .25s;
-}
-@keyframes badgeIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
-.verdict-level {
-    font-family:var(--font-display,Rajdhani,sans-serif);
-    font-size:1.1rem;
-    font-weight:800;
-    letter-spacing:.1em;
-    text-shadow:0 0 10px currentColor;
-}
-.verdict-status {
-    font-family:var(--font-mono,monospace);
-    font-size:.75rem;
-    color:var(--text-dim,#5a7a9a);
-    margin-top:2px;
-}
+    Walks the DOM ONCE using BeautifulSoup's own text-node iteration
+    (soup.find_all(string=True)) rather than re-querying nested tags like
+    div/span/p/li separately — the old approach called get_text() on a <div>
+    AND on every <span> inside it, double- and triple-counting the same text
+    and corrupting the "how much real content did we get" length check.
+    """
+    if not html_content:
+        return ""
 
-.result-meta-grid {
-    display:grid;
-    grid-template-columns:repeat(3,1fr);
-    gap:.75rem;
-    margin-bottom:1rem;
-}
-.result-meta-item {
-    background:rgba(255,255,255,.025);
-    border:1px solid rgba(255,255,255,.05);
-    border-radius:10px;
-    padding:.6rem .8rem;
-    animation:metaIn .4s ease both;
-}
-.result-meta-item:nth-child(2){animation-delay:.07s}
-.result-meta-item:nth-child(3){animation-delay:.14s}
-@keyframes metaIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
-.rmi-label {
-    font-family:var(--font-mono,monospace);
-    font-size:.6rem;
-    letter-spacing:.1em;
-    color:var(--text-dim,#5a7a9a);
-    text-transform:uppercase;
-    margin-bottom:.25rem;
-}
-.rmi-val {
-    font-family:var(--font-display,Rajdhani,sans-serif);
-    font-size:.85rem;
-    font-weight:700;
-    color:var(--text,#c8d8e8);
-    line-height:1.2;
-}
+    soup = BeautifulSoup(html_content, 'html.parser')
+    for tag in soup(_BOILERPLATE_TAGS):
+        tag.decompose()
 
-.ai-scan-summary {
-    background:rgba(0,212,255,.03);
-    border:1px solid rgba(0,212,255,.08);
-    border-radius:10px;
-    padding:.75rem 1rem;
-}
-.scan-summary-label {
-    font-family:var(--font-display,Rajdhani,sans-serif);
-    font-size:.65rem;
-    font-weight:700;
-    letter-spacing:.1em;
-    color:var(--primary,#00d4ff);
-    text-transform:uppercase;
-    margin-bottom:.4rem;
-}
-.scan-summary-text {
-    font-family:var(--font-body,Inter,sans-serif);
-    font-size:.88rem;
-    line-height:1.7;
-    color:var(--text,#c8d8e8);
-}
+    pieces = []
 
-/* Pulse animations */
-@keyframes pulseSafe{0%,100%{box-shadow:0 0 40px rgba(0,255,157,.10)}50%{box-shadow:0 0 55px rgba(0,255,157,.22)}}
-@keyframes pulseLow{0%,100%{box-shadow:0 0 40px rgba(59,130,246,.10)}50%{box-shadow:0 0 55px rgba(59,130,246,.22)}}
-@keyframes pulseMedium{0%,100%{box-shadow:0 0 40px rgba(255,179,64,.12)}50%{box-shadow:0 0 60px rgba(255,179,64,.28)}}
-@keyframes pulseHigh{0%,100%{box-shadow:0 0 40px rgba(249,115,22,.12)}50%{box-shadow:0 0 60px rgba(249,115,22,.28)}}
-@keyframes pulseCritical{0%,100%{box-shadow:0 0 40px rgba(255,51,102,.15)}50%{box-shadow:0 0 70px rgba(255,51,102,.40)}}
-.pulse-safe{animation:pulseSafe 3s ease-in-out infinite}
-.pulse-low{animation:pulseLow 3s ease-in-out infinite}
-.pulse-medium{animation:pulseMedium 2.5s ease-in-out infinite}
-.pulse-high{animation:pulseHigh 2s ease-in-out infinite}
-.pulse-critical{animation:pulseCritical 1.5s ease-in-out infinite}
+    if soup.title and soup.title.string:
+        pieces.append(soup.title.string.strip())
 
-/* ── Hidden localStorage bridge textarea ── */
-div:has(> div > textarea[aria-label="__cls_bridge__"]) {
-    position: absolute !important;
-    width: 0 !important; height: 0 !important;
-    overflow: hidden !important; opacity: 0 !important;
-    pointer-events: none !important; z-index: -9999 !important;
-    top: 0 !important; left: 0 !important;
-}
+    meta_desc = soup.find('meta', attrs={'name': 'description'})
+    if meta_desc and meta_desc.get('content'):
+        pieces.append(meta_desc.get('content').strip())
+    meta_og = soup.find('meta', attrs={'property': 'og:description'})
+    if meta_og and meta_og.get('content'):
+        pieces.append(meta_og.get('content').strip())
 
-/* ── Scan History Table ── */
-.scan-history-table {
-    border:1px solid rgba(0,212,255,.1);
-    border-radius:12px;
-    overflow:hidden;
-    font-family:var(--font-body,Inter,sans-serif);
-    font-size:.82rem;
-}
-.sht-header,.sht-row {
-    display:grid;
-    grid-template-columns:40px 1fr 90px 70px 1fr;
-    gap:.5rem;
-    padding:.6rem 1rem;
-    align-items:center;
-}
-.sht-header {
-    background:rgba(0,212,255,.06);
-    font-family:var(--font-display,Rajdhani,sans-serif);
-    font-size:.62rem;
-    letter-spacing:.1em;
-    text-transform:uppercase;
-    color:var(--primary,#00d4ff);
-    border-bottom:1px solid rgba(0,212,255,.1);
-}
-.sht-row {
-    border-bottom:1px solid rgba(255,255,255,.03);
-    transition:background .2s;
-}
-.sht-row:hover{background:rgba(0,212,255,.03)}
-.sht-row:last-child{border-bottom:none}
-</style>""", unsafe_allow_html=True)
+    # One walk over real text nodes — no double counting from parent/child tags.
+    for node in soup.find_all(string=True):
+        parent_name = getattr(node.parent, 'name', None)
+        if parent_name in ('script', 'style', 'title'):
+            continue
+        style = (node.parent.get('style', '') if node.parent else '') or ''
+        style = style.replace(' ', '').lower()
+        if 'display:none' in style or 'visibility:hidden' in style:
+            continue
+        txt = node.strip()
+        if not txt:
+            continue
+        if txt.lower() in _NAV_JUNK:
+            continue
+        pieces.append(txt)
 
-H("""
-<canvas id="cl-matrix" style="
-    position:fixed;top:0;left:0;width:100vw;height:100vh;
-    pointer-events:none;z-index:0;opacity:0.06;"></canvas>
-<script>
-(function(){
-    var c = document.getElementById('cl-matrix');
-    if (!c) return;
-    var ctx = c.getContext('2d');
-    c.width  = window.innerWidth;
-    c.height = window.innerHeight;
-    var cols = Math.floor(c.width / 20);
-    var drops = Array(cols).fill(1);
-    var chars = '01アイウエオカキクケコサシスセソタチツテトナニヌネノ⊕⊗⊘◈◉';
-    function draw() {
-        ctx.fillStyle = 'rgba(2,4,9,0.05)';
-        ctx.fillRect(0, 0, c.width, c.height);
-        ctx.fillStyle = '#00d4ff';
-        ctx.font = '14px JetBrains Mono, monospace';
-        for (var i = 0; i < drops.length; i++) {
-            var ch = chars[Math.floor(Math.random() * chars.length)];
-            ctx.fillStyle = Math.random() > 0.95 ? '#ffffff' : (Math.random() > 0.8 ? '#7c3aed' : '#00d4ff');
-            ctx.fillText(ch, i * 20, drops[i] * 20);
-            if (drops[i] * 20 > c.height && Math.random() > 0.975) drops[i] = 0;
-            drops[i]++;
+    # Attributes that carry visible/meaningful text but aren't text nodes.
+    for inp in soup.find_all('input'):
+        placeholder = inp.get('placeholder')
+        if placeholder:
+            pieces.append(placeholder.strip())
+        if inp.get('type') in ('button', 'submit') and inp.get('value'):
+            pieces.append(inp.get('value').strip())
+
+    for img in soup.find_all('img'):
+        alt = img.get('alt')
+        if alt and len(alt.strip()) > 2:
+            pieces.append(alt.strip())
+
+    text = ' '.join(pieces)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def fetch_via_playwright(url: str, timeout_ms: int = 15000) -> tuple:
+    """
+    Render a page with a real headless browser for JS-heavy / bot-gated sites.
+
+    Key robustness choices:
+      - 'domcontentloaded' first: this resolves as soon as the DOM is parsed,
+        instead of 'networkidle', which many real-world sites (ads, analytics
+        beacons, chat widgets, websockets) never satisfy, causing a hard
+        Playwright TimeoutError and a totally empty result under the old code.
+      - We then best-effort wait for network idle for a short grace period,
+        but a timeout there is NOT treated as failure — whatever DOM exists
+        at that point is still returned.
+      - A small fixed settle delay lets lazy-loaded / hydrated content paint.
+      - Extra headers + a realistic viewport/UA reduce basic bot-blocking.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=['--disable-blink-features=AutomationControlled'],
+            )
+            context = browser.new_context(
+                user_agent=('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                            '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
+                viewport={'width': 1366, 'height': 900},
+                locale='en-US',
+                extra_http_headers={
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
+            )
+            page = context.new_page()
+
+            status = None
+            try:
+                response = page.goto(url, timeout=timeout_ms, wait_until='domcontentloaded')
+                status = response.status if response else None
+            except Exception as goto_err:
+                # Even a slow/failed goto often leaves a usable partial DOM
+                # (e.g. redirected, or the request itself hung after the
+                # document started rendering). Keep going instead of bailing.
+                logger.warning("[Playwright] goto() raised for %s: %s", url, goto_err)
+
+            # Best-effort settle: don't fail the whole fetch if this times out.
+            try:
+                page.wait_for_load_state('networkidle', timeout=4000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1200)  # let hydration/lazy content paint
+
+            html = page.content()
+            browser.close()
+
+            if not html or len(html) < 50:
+                return None, status, "Playwright returned an empty page"
+            return html, status or 200, None
+    except Exception as e:
+        return None, None, str(e)
+
+def analyse_webpage_content(url: str, timeout: int = 12) -> dict:
+    """
+    Safely fetch HTML, parses, runs JS execution if needed, checks keywords, 
+    and passes extracted text directly to the text scam model.
+    """
+    result = {
+        'fetched':            False,
+        'url_used':           url,
+        'suspicious_phrases': [],
+        'content_snippet':    '',
+        'extracted_text':     '',
+        'error':              None,
+        'text_model_label':       None,
+        'text_model_probability': 0.0,
+        'extracted_text_len':     0,
+        'keyword_score_raw':          0.0,
+        'keyword_score_normalised':   0.0,
+        'keyword_hits':               [],
+        'debug_logs': {
+            'http_status': None,
+            'response_size': 0,
+            'html_size': 0,
+            'extracted_text_len': 0,
+            'extraction_method': 'None',
+            'js_rendering_used': False,
+            'reached_text_model': False,
+            'text_ml_prob': 0.0,
+            'rule_score': 0.0,
+            'keyword_score_raw': 0.0,
+            'keyword_score_normalised': 0.0,
+            'keyword_hits': [],
+            'final_hybrid_score': 0.0,
         }
     }
-    setInterval(draw, 60);
-    window.addEventListener('resize', function(){
-        c.width  = window.innerWidth;
-        c.height = window.innerHeight;
-        cols  = Math.floor(c.width / 20);
-        drops = Array(cols).fill(1);
-    });
-})();
-</script>
-""")
 
-# ══════════════════════════════════════════════════════════════════
-# SESSION STATE — history stored in browser localStorage ONLY.
-# ✅ 100% private to this browser/device — other users NEVER see it.
-# ✅ Persists across tab closes, refreshes, and browser restarts.
-# ✅ Never appears in the URL — completely invisible to anyone else.
-# ✅ Only cleared when the user clicks "Clear All History".
-# Uses streamlit-local-storage for reliable JS↔Python bridging.
-# ══════════════════════════════════════════════════════════════════
+    fetch_url = url.strip()
+    if not fetch_url.startswith(('http://', 'https://')):
+        fetch_url = 'http://' + fetch_url
+    result['url_used'] = fetch_url
 
-_LS_KEY  = "cyberlens_stats"
-_localS  = LocalStorage()
+    logger.info("[URL Scanner] Step 1/5 — starting fetch for %s", fetch_url)
 
-# ── Read persisted stats from browser localStorage ───────────────
-if "stats" not in st.session_state:
-    _stored = _localS.getItem(_LS_KEY)
-    if isinstance(_stored, dict):
-        st.session_state.stats = _stored
-    elif isinstance(_stored, str) and _stored.strip().startswith("{"):
-        try:
-            st.session_state.stats = json.loads(_stored)
-        except Exception:
-            st.session_state.stats = make_empty_stats()
-    else:
-        st.session_state.stats = make_empty_stats()
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
+    }
 
-if "current_page"  not in st.session_state: st.session_state.current_page  = "Dashboard"
-if "result_text"   not in st.session_state: st.session_state.result_text   = None
-if "result_ocr"    not in st.session_state: st.session_state.result_ocr    = None
-if "result_pdf"    not in st.session_state: st.session_state.result_pdf    = None
-if "result_url"    not in st.session_state: st.session_state.result_url    = None
-if "result_qr"     not in st.session_state: st.session_state.result_qr     = None
-if "result_co"     not in st.session_state: st.session_state.result_co     = None
-if "_ls_key_ctr"   not in st.session_state: st.session_state._ls_key_ctr   = 0
+    html_content = ""
+    status_code = None
+    extraction_method = "Static HTML + BeautifulSoup"
+    js_rendering_used = False
 
-
-def _save_to_localstorage(stats: dict) -> None:
-    """Save scan history to this browser's localStorage only.
-    Private to this device — no URL params, no server files."""
-    st.session_state._ls_key_ctr += 1
-    _localS.setItem(_LS_KEY, stats, key=f"_ls_set_{st.session_state._ls_key_ctr}")
-
-
-def _clear_localstorage() -> None:
-    """Wipe this user's CyberLens history from localStorage only."""
     try:
-        st.session_state._ls_key_ctr += 1
-        _localS.deleteItem(_LS_KEY, key=f"_ls_del_{st.session_state._ls_key_ctr}")
-    except (KeyError, Exception):
+        resp = requests.get(fetch_url, headers=headers, timeout=timeout, allow_redirects=True, verify=False)
+        status_code = resp.status_code
+        result['debug_logs']['http_status'] = status_code
+        result['debug_logs']['response_size'] = len(resp.content)
+        result['debug_logs']['html_size'] = len(resp.text)
+        logger.info(
+            "[URL Scanner] Fetch complete — status=%s response_bytes=%s html_bytes=%s",
+            status_code, len(resp.content), len(resp.text),
+        )
+
+        is_cloudflare = False
+        server_header = resp.headers.get('Server', '').lower()
+        if 'cloudflare' in server_header or 'cloudflare' in resp.text.lower() or 'ray id' in resp.text.lower():
+            is_cloudflare = True
+
+        content_type = resp.headers.get('Content-Type', '').lower()
+        is_html_like = ('html' in content_type) or (not content_type and resp.text.lstrip().startswith('<'))
+
+        if status_code == 403:
+            if is_cloudflare:
+                result['error'] = "Access blocked by Cloudflare bot protection (HTTP 403)."
+            else:
+                result['error'] = "Access denied by website server (HTTP 403 Forbidden)."
+            logger.warning("[URL Scanner] %s (%s)", result['error'], fetch_url)
+        elif status_code == 404:
+            result['error'] = "The website was not found (HTTP 404 Not Found)."
+            logger.warning("[URL Scanner] %s (%s)", result['error'], fetch_url)
+        elif status_code >= 500:
+            result['error'] = f"The website server returned an error (HTTP {status_code})."
+            logger.warning("[URL Scanner] %s (%s)", result['error'], fetch_url)
+        elif not is_html_like:
+            # Non-HTML response (PDF, image, JSON, binary download, etc.) — no
+            # point running BeautifulSoup/Playwright on it.
+            result['error'] = f"This URL did not return an HTML page (Content-Type: {content_type or 'unknown'})."
+            logger.info("[URL Scanner] Skipping non-HTML content for %s (%s)", fetch_url, content_type)
+        else:
+            resp.raise_for_status()
+            html_content = resp.text
+
+    except requests.exceptions.Timeout:
+        result['error'] = "The website took too long to respond (timeout)."
+        logger.warning("[URL Scanner] Timeout fetching %s", fetch_url, exc_info=True)
+    except requests.exceptions.SSLError:
+        result['error'] = "Could not verify the site's SSL certificate."
+        logger.warning("[URL Scanner] SSL error fetching %s", fetch_url, exc_info=True)
+    except requests.exceptions.ConnectionError:
+        result['error'] = "Could not connect to the website — it may be down, blocking requests, or connection refused."
+        logger.warning("[URL Scanner] Connection error fetching %s", fetch_url, exc_info=True)
+    except requests.exceptions.HTTPError:
+        status = resp.status_code if 'resp' in locals() else '?'
+        result['error'] = f"The website returned an error (HTTP {status})."
+        logger.warning("[URL Scanner] HTTPError (status=%s) fetching %s", status, fetch_url, exc_info=True)
+    except Exception as e:
+        result['error'] = f"Unable to fetch this website: {str(e)}"
+        logger.error("[URL Scanner] Unexpected error fetching %s: %s", fetch_url, e, exc_info=True)
+
+    visible_text = ""
+    if html_content:
+        visible_text = _extract_visible_text(html_content)
+        logger.info(
+            "[URL Scanner] Step 2/5 — static extraction: %d chars of visible text (method=%s)",
+            len(visible_text), extraction_method,
+        )
+
+        # JS Detection and rendering trigger
+        text_len = len(visible_text)
+        js_required = False
+        if text_len < 150:
+            js_required = True
+        else:
+            html_lower = html_content.lower()
+            if 'id="root"' in html_lower or 'id="app"' in html_lower or 'id="__next"' in html_lower or '<app-root>' in html_lower:
+                js_required = True
+
+        if js_required or result['error']:
+            logger.info(
+                "[URL Scanner] JS rendering triggered (js_required=%s, prior_error=%s) — invoking Playwright",
+                js_required, result['error'],
+            )
+            try:
+                pw_html, pw_status, pw_err = fetch_via_playwright(fetch_url, timeout_ms=8000)
+                if pw_err:
+                    logger.warning("[URL Scanner] Playwright reported an error for %s: %s", fetch_url, pw_err)
+                if pw_html:
+                    pw_text = _extract_visible_text(pw_html)
+                    # Only switch to the Playwright result if it actually got
+                    # us MORE content than the static pass — otherwise keep
+                    # whatever static HTML/text we already had (e.g. a page
+                    # that legitimately just has little text shouldn't be
+                    # overwritten with a worse render).
+                    if len(pw_text) > len(visible_text):
+                        html_content = pw_html
+                        status_code = pw_status or 200
+                        result['error'] = None
+                        extraction_method = "Playwright rendering"
+                        js_rendering_used = True
+                        visible_text = pw_text
+                    logger.info(
+                        "[URL Scanner] Playwright re-extraction complete: %d chars of visible text (used=%s)",
+                        len(pw_text), js_rendering_used,
+                    )
+            except ImportError:
+                logger.warning(
+                    "[URL Scanner] Playwright is not installed — cannot render JS for %s", fetch_url
+                )
+                if js_required:
+                    result['error'] = "This webpage requires JavaScript rendering. Static HTML contained insufficient content for analysis."
+            except Exception as e:
+                logger.error(
+                    "[URL Scanner] Playwright rendering failed for %s: %s", fetch_url, e, exc_info=True
+                )
+                if js_required:
+                    result['error'] = f"This webpage requires JavaScript rendering, but browser automation failed: {str(e)}"
+
+    if visible_text and len(visible_text.strip()) >= 15:
+        visible_lower = visible_text.lower()
+        found = [p for p in SCAM_CONTENT_PHRASES if p in visible_lower]
+
+        result['fetched']            = True
+        result['suspicious_phrases'] = found
+        result['content_snippet']    = visible_text[:500]
+        # Fuller copy of the extracted text so the results page can show what
+        # was actually scraped from the page (capped to keep the UI/response light).
+        result['extracted_text']     = visible_text[:5000]
+        result['extracted_text_len'] = len(visible_text)
+
+        logger.info(
+            "[URL Scanner] Step 3/5 — %d scam phrase(s) matched against curated phrase list: %s",
+            len(found), found[:5],
+        )
+
+        # ── Step 4/5: keyword-based scoring, using the SAME score_keywords()
+        # function the text scanner (analyse_text) uses, so URL page content
+        # and pasted text are scored with identical keyword logic. ──────────
+        try:
+            kw_result = score_keywords(visible_text)
+            kw_raw    = kw_result['score']
+            kw_norm   = normalise_score(kw_raw, ceiling=20.0)
+
+            result['keyword_score_raw']        = kw_raw
+            result['keyword_score_normalised'] = kw_norm
+            result['keyword_hits']             = kw_result['found']
+
+            result['debug_logs']['keyword_score_raw']        = kw_raw
+            result['debug_logs']['keyword_score_normalised'] = kw_norm
+            result['debug_logs']['keyword_hits']              = kw_result['found']
+
+            logger.info(
+                "[URL Scanner] score_keywords() on page text — raw=%s normalised=%s hits=%s",
+                kw_raw, kw_norm, kw_result['found'][:8],
+            )
+        except Exception as e:
+            logger.error(
+                "[URL Scanner] score_keywords() failed on extracted page text for %s: %s",
+                fetch_url, e, exc_info=True,
+            )
+
+        # ── Step 5/5: run the extracted text through the text-scam ML model ──
+        reached_text_model = False
+        text_ml_prob = 0.0
+        text_model_label = None
+        try:
+            text_ml = ml_predict(visible_text[:5000])
+            text_model_label = text_ml.get('label')
+            text_ml_prob = round(float(text_ml.get('probability', 0.0)), 4)
+            result['text_model_label']       = text_model_label
+            result['text_model_probability'] = text_ml_prob
+            reached_text_model = True
+            logger.info(
+                "[URL Scanner] Text ML model scored page content — label=%s probability=%s",
+                text_model_label, text_ml_prob,
+            )
+        except Exception as e:
+            logger.error(
+                "[URL Scanner] Text ML model failed on extracted page text for %s: %s",
+                fetch_url, e, exc_info=True,
+            )
+
+        result['debug_logs']['reached_text_model'] = reached_text_model
+        result['debug_logs']['text_ml_prob'] = text_ml_prob
+
+        # Legacy heuristic rule score — kept alongside score_keywords() for
+        # backward-compatible debug output (see 'rule_score' in the debug panel).
+        try:
+            from ml_model import rule_based_scam_score
+            result['debug_logs']['rule_score'] = rule_based_scam_score(visible_text)
+        except Exception as e:
+            logger.warning(
+                "[URL Scanner] rule_based_scam_score() failed for %s: %s", fetch_url, e, exc_info=True
+            )
+    else:
+        logger.info(
+            "[URL Scanner] Not enough visible text extracted (%d chars) — skipping keyword/ML content scoring",
+            len(visible_text.strip()) if visible_text else 0,
+        )
+
+    result['debug_logs']['extracted_text_len'] = len(visible_text)
+    result['debug_logs']['extraction_method'] = extraction_method if visible_text else "Failed"
+    result['debug_logs']['js_rendering_used'] = js_rendering_used
+
+    return result
+
+def analyse_url_full(url: str) -> dict:
+    """Wrap utils.analyse_url with a friendly result envelope."""
+    if not url or not url.strip():
+        return {'error': 'No URL provided'}
+
+    logger.info("[URL Scanner] ==== New scan requested for: %s ====", url)
+
+    base = analyse_url(url)
+    rs   = base['risk_score']
+    ri   = base['risk_level']
+    logger.info("[URL Scanner] URL heuristic score (analyse_url): %s (%s)", rs, ri)
+
+    indicators = []
+    if not base['is_https']:        indicators.append('No HTTPS encryption')
+    if base['has_ip']:              indicators.append('IP address as domain')
+    if base['is_long']:             indicators.append('Abnormally long URL')
+    if base['suspicious_kw']:       indicators.append(f"Phishing keywords: {', '.join(base['suspicious_kw'][:4])}")
+    if base['tld_risk']:            indicators.append(f"High-risk TLD: {base['tld']}")
+    if base['typosquat_risk']:      indicators.append('Possible typosquatting of known brand')
+    if base['is_known_legit']:      indicators.append('Domain matches known legitimate site')
+
+    if '@' in url:
+        indicators.append('URL contains suspicious "@" character')
+    if '%' in url:
+        indicators.append('URL contains percent-encoded characters')
+    if any('redirection' in f for f in base['flags']):
+        indicators.append('URL contains suspicious redirection parameters')
+    if any('entropy' in f for f in base['flags']):
+        indicators.append('High string randomness/entropy')
+
+    is_shortened_domain = any(sd in url.lower() for sd in SHORTENER_DOMAINS)
+    if is_shortened_domain:
+        indicators.append('Masked URL (using known link shortener)')
+
+    content_result = analyse_webpage_content(url)
+    scam_phrases    = content_result.get('suspicious_phrases', [])
+    if scam_phrases:
+        indicators.append(f"Scam phrases found on page: {', '.join(scam_phrases[:4])}")
+
+    content_bonus = min(15 * len(scam_phrases), 45)
+
+    text_ml_prob  = content_result.get('text_model_probability', 0.0) or 0.0
+    text_ml_label = content_result.get('text_model_label')
+    if content_result.get('fetched') and text_ml_label is not None:
+        if text_ml_prob >= 0.5:
+            indicators.append(
+                f"Webpage text flagged as scam-like by text AI model ({round(text_ml_prob * 100)}% confidence)"
+            )
+        elif text_ml_prob < 0.35:
+            indicators.append("Webpage text rated as likely legitimate by text AI model")
+    
+    text_ml_bonus = round(text_ml_prob * 35) if content_result.get('fetched') else 0
+
+    url_ml_result = url_ml_predict(url)
+    ml_prob       = url_ml_result.get('probability', 0.0)
+    ml_fetched    = url_ml_result.get('fetched', False)
+    ml_fetch_note = url_ml_result.get('fetch_note')
+
+    try:
+        url_ml_top_signals_raw = get_feature_importance_url(url, top_n=5)
+        url_ml_top_signals = [name for name, _score in url_ml_top_signals_raw]
+        logger.info(
+            "[URL Scanner] get_feature_importance_url() top signals for %s: %s",
+            url, url_ml_top_signals_raw,
+        )
+    except Exception as e:
+        logger.warning(
+            "[URL Scanner] get_feature_importance_url() failed for %s: %s", url, e, exc_info=True
+        )
+        url_ml_top_signals = []
+
+    if url_ml_result.get('label') != 'unknown':
+        if url_ml_result['label'] == 'phishing':
+            indicators.append(
+                f"AI model flags URL as phishing ({round(ml_prob * 100)}% confidence)"
+            )
+        else:
+            indicators.append("AI model rates URL as likely legitimate")
+
+        ml_bonus = round(ml_prob * (55 if ml_fetched else 40))
+    else:
+        ml_bonus = 0
+
+    # Redirection check / Shortener suspension check
+    shortener_warning_detected = False
+    warning_phrases = [
+        "created by a suspended account",
+        "link has been suspended",
+        "why was this link blocked",
+        "link has been blocked",
+        "flagged as spam, phishing",
+        "no longer available because it was created by a suspended account",
+        "violates our terms of service",
+        "violates our acceptable use policy",
+        "site has been suspended",
+        "account suspended",
+        "this link has been flagged"
+    ]
+    
+    page_text_lower = content_result.get('content_snippet', '').lower()
+    is_dest_shortened = any(sd in content_result.get('url_used', '').lower() for sd in SHORTENER_DOMAINS)
+    
+    if is_shortened_domain or is_dest_shortened:
+        if any(p in page_text_lower for p in warning_phrases):
+            shortener_warning_detected = True
+
+    false_safe_floor = 0
+    if url_ml_result.get('label') == 'phishing' and ml_prob >= 0.75:
+        false_safe_floor = 65
+    elif url_ml_result.get('label') == 'phishing' and ml_prob >= 0.60:
+        false_safe_floor = 45
+
+    if content_result.get('fetched') and text_ml_prob >= 0.80:
+        false_safe_floor = max(false_safe_floor, 60)
+    elif content_result.get('fetched') and text_ml_prob >= 0.65:
+        false_safe_floor = max(false_safe_floor, 40)
+
+    if base['typosquat_risk']:
+        false_safe_floor = max(false_safe_floor, 65)
+    if base['has_ip'] or '@' in url:
+        false_safe_floor = max(false_safe_floor, 55)
+
+    if shortener_warning_detected:
+        indicators.append('URL officially suspended/blocked by provider for abuse/phishing')
+        false_safe_floor = 90
+
+    final_score = max(min(rs + content_bonus + ml_bonus + text_ml_bonus, 100), false_safe_floor)
+    final_ri    = compute_risk_level(final_score)
+
+    # ── Trusted-domain override / impersonation escalation ──────────────
+    # Generic lexical/keyword models (suspicious words like "login",
+    # "verify", "account", "security"; or a text-ML pass over a page that
+    # legitimately talks about account security) will always fire on the
+    # normal, expected content of major tech companies' own sites. Rather
+    # than trying to hand-tune keyword weights per-domain, we check the
+    # resolved domain against a small, curated allowlist of verified
+    # official domains (trusted_companies.py) and correct the score:
+    #   - exact/official domain (or subdomain of one)  -> cap the score low
+    #   - contains a brand name but ISN'T that domain   -> push score high
+    # A hard-suspension signal (shortener_warning_detected) still wins,
+    # since even an official domain can be reported for abuse.
+    website_domain = base.get('domain', '') or ''
+    trusted_brand = None if shortener_warning_detected else match_trusted_domain(website_domain)
+    impersonation_brand = None if trusted_brand else detect_brand_impersonation(website_domain)
+
+    TRUST_CEILING = 12.0
+    IMPERSONATION_FLOOR = 75.0
+
+    if trusted_brand:
+        if final_score > TRUST_CEILING:
+            indicators.append(
+                f"Domain verified as an official {trusted_brand.title()} domain (trusted-domain registry)"
+            )
+        final_score = min(final_score, TRUST_CEILING)
+        final_ri = compute_risk_level(final_score)
+    elif impersonation_brand:
+        indicators.append(
+            f"⚠ Domain contains the '{impersonation_brand.title()}' brand name but is NOT its official "
+            f"domain — likely impersonation/lookalike site"
+        )
+        final_score = max(final_score, IMPERSONATION_FLOOR)
+        final_ri = compute_risk_level(final_score)
+
+    indicators = list(dict.fromkeys(indicators))
+
+    # ── Explanation bullets ──────────────────────────────────────────────
+    # Built only from signals that actually fed into the risk score above
+    # (real keyword hits, real ML flags, real domain/TLD risk) — not a loose
+    # re-scan of raw text — so the explanation can never claim "high-risk
+    # indicators" when the computed score doesn't reflect that.
+    explanation_bullets = []
+
+    if trusted_brand:
+        explanation_bullets.append(f"✓ Verified official {trusted_brand.title()} domain (trusted-domain registry)")
+    if impersonation_brand:
+        explanation_bullets.append(
+            f"⚠ Mimics {impersonation_brand.title()} branding but is not an official {impersonation_brand.title()} domain"
+        )
+    if shortener_warning_detected:
+        explanation_bullets.append("✓ URL officially suspended/blocked by the provider for abuse")
+    if base['suspicious_kw'] or scam_phrases:
+        kws_display = list(dict.fromkeys(list(base['suspicious_kw']) + list(scam_phrases)))[:4]
+        explanation_bullets.append(f"✓ Suspicious keywords found: {', '.join(kws_display)}")
+    if base['tld_risk'] > 0 or base['has_ip'] or base['typosquat_risk'] or '@' in url or is_shortened_domain or is_dest_shortened:
+        explanation_bullets.append("✓ Suspicious domain, TLD, or shortened link structure")
+    if not base['is_https']:
+        explanation_bullets.append("✓ Connection is not secured with HTTPS")
+    if (url_ml_result.get('label') == 'phishing' and ml_prob >= 0.5) or (text_ml_prob >= 0.5):
+        explanation_bullets.append("✓ Flagged with high confidence by AI threat models")
+
+    # The tone and content of the verdict always matches the FINAL risk
+    # level, never the raw presence of a loosely-matched keyword.
+    final_level = final_ri['level']
+    if final_level == 'CRITICAL':
+        if explanation_bullets:
+            verdict = "🚨 This URL has been flagged with multiple high-risk indicators:\n\n" + "\n".join(explanation_bullets)
+        else:
+            verdict = "🚨 This URL shows strong phishing indicators and is likely malicious. Do not enter any personal information."
+    elif final_level == 'HIGH':
+        if explanation_bullets:
+            verdict = "⚠️ This URL shows strong suspicious indicators:\n\n" + "\n".join(explanation_bullets)
+        else:
+            verdict = "⚠️ This URL shows strong phishing indicators and is likely malicious."
+    elif final_level == 'MEDIUM':
+        if explanation_bullets:
+            verdict = "🧐 This URL has some suspicious characteristics worth investigating:\n\n" + "\n".join(explanation_bullets)
+        else:
+            verdict = "🧐 This URL has some suspicious characteristics. Exercise caution before proceeding."
+    elif final_level == 'LOW':
+        if explanation_bullets:
+            verdict = "🔵 Only minor risk factors were identified:\n\n" + "\n".join(explanation_bullets)
+        else:
+            verdict = "🔵 This URL appears mostly safe. Only minor risk factors were identified — basic verification is still recommended."
+    else:  # SAFE
+        verdict = "✅ No major suspicious indicators were detected. This URL appears to be safe."
+
+    debug_logs = content_result.get('debug_logs', {})
+    debug_logs['final_hybrid_score'] = final_score
+    debug_logs['url_ml_prob'] = ml_prob
+    debug_logs['url_heuristic_score'] = rs
+    debug_logs['url_ml_top_signals'] = url_ml_top_signals
+    debug_logs['url_ml_fetch_note'] = ml_fetch_note
+
+    logger.info(
+        "[URL Scanner] ==== Scan complete for %s — final_score=%s level=%s "
+        "url_ml=%s(%.4f) text_ml=%s(%.4f) fetch_note=%s ====",
+        url, final_score, final_ri['level'],
+        url_ml_result.get('label', 'unknown'), ml_prob,
+        content_result.get('text_model_label'), text_ml_prob,
+        ml_fetch_note,
+    )
+
+    return {
+        **base,
+        'risk_score':      final_score,
+        'risk_level':      final_ri['level'],
+        'risk_color':      final_ri['color'],
+        'risk_emoji':      final_ri['emoji'],
+        'verdict':         verdict,
+        'indicators':      indicators,
+        'suspicious_kws':  base['suspicious_kw'],
+        'recommendations': get_recommendations(final_ri['level']),
+        'confidence':      min(95, max(50, int(max(ml_prob, text_ml_prob) * 100))),
+        'scan_type':       'URL Scanner',
+        'content_analysis':content_result,
+        'open_url':        content_result.get('url_used', url),
+        'url_ml_label':      url_ml_result.get('label', 'unknown'),
+        'url_ml_probability':round(ml_prob * 100, 1),
+        'url_ml_fetched':    ml_fetched,
+        'url_ml_fetch_error':url_ml_result.get('fetch_error'),
+        'url_ml_top_signals':url_ml_top_signals,
+        'fetch_note':        ml_fetch_note,
+        'text_model_label':       content_result.get('text_model_label'),
+        'text_model_probability': round(text_ml_prob * 100, 1),
+        'trusted_domain_check': {
+            'verified_brand':      trusted_brand,
+            'impersonation_brand': impersonation_brand,
+        },
+        'debug_logs':      debug_logs,
+    }
+
+# ─── QR content-type detection ──────────────────────────────────────────────
+# Recognises the common QR payload shapes (URL, mailto:/bare email, tel:/bare
+# phone number) so the QR scanner can route each type to the correct existing
+# pipeline instead of guessing with a single loose check.
+_EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$')
+_PHONE_RE = re.compile(r'^\+?[0-9][0-9\s\-().]{6,18}[0-9]$')
+
+def detect_qr_content_type(data: str) -> str:
+    """
+    Classify decoded QR payload as one of: URL, EMAIL, PHONE, TEXT.
+    Mirrors the QR payload shapes commonly produced by generators:
+      - URL:   'http://...', 'https://...', or a bare domain like 'example.com/x'
+      - Email: 'mailto:user@domain.com' or a bare email address
+      - Phone: 'tel:+1234567890' or a bare phone number
+      - Text:  anything else (wifi configs, vCards, plain text, etc.)
+    """
+    if not data:
+        return 'TEXT'
+
+    payload = data.strip()
+
+    # ── URL ──
+    if payload.startswith(('http://', 'https://')):
+        return 'URL'
+
+    # ── Email ──
+    if payload.lower().startswith('mailto:'):
+        return 'EMAIL'
+    if _EMAIL_RE.match(payload):
+        return 'EMAIL'
+
+    # ── Phone ──
+    if payload.lower().startswith('tel:'):
+        return 'PHONE'
+    if _PHONE_RE.match(payload):
+        return 'PHONE'
+
+    # ── Bare domain heuristic (no scheme, e.g. "example.com/promo") ──
+    first_segment = payload.split('/')[0].split('?')[0]
+    if '.' in first_segment and ' ' not in first_segment and '@' not in first_segment:
+        # crude but effective TLD-shape check: letters after the last dot
+        tld_candidate = first_segment.rsplit('.', 1)[-1]
+        if tld_candidate.isalpha() and 2 <= len(tld_candidate) <= 24:
+            return 'URL'
+
+    return 'TEXT'
+
+
+# ─── Shared image / QR preprocessing helpers ───────────────────────────────
+# Used by analyse_qr(), analyse_ocr_image(), and analyse_pdf() so all three
+# extraction paths benefit from the same accuracy improvements.
+
+def _deskew_image(gray):
+    """
+    Estimate and correct small page rotation using the minimum-area
+    bounding rectangle of the foreground (text) pixels.
+
+    Why this matters for the "words getting merged" symptom: even a
+    2-5 degree skew makes ascenders/descenders from one text line lean
+    into the line above or below, and makes the gaps between words on a
+    slanted line inconsistent. Tesseract's line/word segmentation is very
+    sensitive to this, so straightening the page BEFORE thresholding fixes
+    a large share of merged-word and dropped-space errors for free.
+
+    Returns the original array unchanged if there isn't enough foreground
+    to estimate an angle safely, or if the estimated angle is negligible
+    (already straight) or implausibly large (likely a bad estimate on a
+    noisy image) — this keeps the correction conservative so it can't make
+    a clean image worse.
+    """
+    import cv2
+    import numpy as np
+
+    inverted = cv2.bitwise_not(gray)
+    _, bw = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    coords = np.column_stack(np.where(bw > 0))
+    if coords.shape[0] < 50:
+        return gray
+
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+
+    if abs(angle) < 0.3 or abs(angle) > 15:
+        return gray  # already straight, or estimate is unreliable
+
+    h, w = gray.shape[:2]
+    center = (w // 2, h // 2)
+    matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(
+        gray, matrix, (w, h),
+        flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE,
+    )
+
+
+def _enhance_image_for_ocr(pil_img):
+    """
+    Preprocess an image to improve OCR accuracy: grayscale -> deskew ->
+    upscale (if small) -> contrast enhancement (CLAHE) -> denoise ->
+    sharpen -> adaptive threshold. Returns a NEW PIL Image; never mutates
+    the original, and callers should keep the raw image around as a
+    fallback in case the enhanced version happens to OCR worse on a
+    particular file.
+
+    Tuning notes (these specific changes target merged words / missing
+    spaces, which is the main accuracy complaint this pipeline had):
+      - Deskew runs first (see _deskew_image) since skew is a common root
+        cause of touching characters and inconsistent word gaps.
+      - Upscaling now uses a higher floor (1600px) and interpolates on the
+        already-deskewed image. Tesseract's LSTM engine generally does
+        better with more pixels per character; too-small text is a classic
+        cause of adjacent letters/words being read as one blob.
+      - The adaptive-threshold block size was reduced (31 -> 25) and C
+        raised slightly (11 -> 13). A large block size averages over a
+        wider neighbourhood, which on tightly kerned or small fonts can
+        bridge the gap between adjacent words into a single dark blob.
+        A smaller, more local block size keeps inter-word gaps intact.
+      - Denoising strength was reduced slightly (10 -> 7) since aggressive
+        denoising can blur/close small gaps between characters, which is
+        the opposite of what we want here.
+    """
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    cv_img = cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+
+    # Straighten the page before anything else touches pixel spacing
+    gray = _deskew_image(gray)
+
+    # Upscale small images so OCR has more pixels per character to work with
+    h, w = gray.shape[:2]
+    if max(h, w) < 1600:
+        scale = 1600 / max(h, w)
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    # Contrast enhancement
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    # Denoise — median blur removes speckle noise at a small fraction of
+    # the cost of fastNlMeansDenoising (which was the single biggest time
+    # sink in this pipeline: it's near-quadratic in image size and was
+    # running on every upscaled image/page, often taking several seconds
+    # by itself). A 3x3 median blur is nearly as effective for the kind
+    # of scan/photo noise we see here and is essentially instant.
+    gray = cv2.medianBlur(gray, 3)
+
+    # Sharpen (unsharp mask)
+    blurred = cv2.GaussianBlur(gray, (0, 0), sigmaX=3)
+    sharpened = cv2.addWeighted(gray, 1.5, blurred, -0.5, 0)
+
+    # Adaptive threshold — helps OCR on uneven lighting / low contrast
+    # scans. Smaller block size than before to avoid merging tightly
+    # spaced words/characters into one dark region.
+    thresh = cv2.adaptiveThreshold(
+        sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 25, 13,
+    )
+
+    return Image.fromarray(thresh)
+
+
+def _decode_qr_multi(cv_img):
+    """
+    Decode a QR code from a BGR OpenCV image using multiple decoders,
+    scales, and rotations — handles rotated, blurry, or low-contrast codes
+    that a single detectAndDecode() call would miss.
+
+    Order: PyZbar (fast path) -> OpenCV QRCodeDetector (fast path) ->
+    thorough multi-scale/multi-rotation retry with both decoders ->
+    Otsu-thresholded retry -> WeChat QRCode detector (if the OpenCV build
+    includes it). Returns (decoded_string_or_empty, decoder_name).
+    """
+    import cv2
+
+    def _try_pyzbar(img):
+        try:
+            from pyzbar.pyzbar import decode as zbar_decode
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+            results = zbar_decode(gray)
+            if results:
+                return results[0].data.decode('utf-8', errors='ignore')
+        except ImportError:
+            pass
+        except Exception:
+            pass
+        return ''
+
+    def _try_opencv(img, detector):
+        try:
+            data, _, _ = detector.detectAndDecode(img)
+            return data or ''
+        except Exception:
+            return ''
+
+    def _rotate(img, angle):
+        if angle == 90:
+            return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        if angle == 180:
+            return cv2.rotate(img, cv2.ROTATE_180)
+        if angle == 270:
+            return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return img
+
+    qr_detector = cv2.QRCodeDetector()
+
+    # ── Fast path: try the image as-is (covers the vast majority of
+    # clean, upright QR codes without any extra scanning cost) ──
+    data = _try_pyzbar(cv_img)
+    if data:
+        return data, 'pyzbar'
+    data = _try_opencv(cv_img, qr_detector)
+    if data:
+        return data, 'opencv'
+
+    # ── Cheap pre-check before the expensive thorough fallback: does this
+    # image even contain anything that looks like a QR finder pattern?
+    # detect() just localises candidate squares — it's far cheaper than
+    # the 24-attempt multi-scale/rotation decode loop below. If it finds
+    # nothing, there's almost certainly no QR code on this page, so skip
+    # straight to "not found" instead of burning time on every page of
+    # every PDF (this was the main source of the slowdown).
+    try:
+        found, _ = qr_detector.detect(cv_img)
+        if not found:
+            return '', ''
+    except Exception:
+        pass  # if the cheap check itself fails, fall through to thorough scan
+
+    # ── Thorough fallback: multi-scale + multi-rotation, for rotated,
+    # blurry, or low-contrast QR codes ──
+    for scale in (1.5, 2.0, 0.75):
+        scaled = cv2.resize(cv_img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        for angle in (0, 90, 180, 270):
+            rotated = _rotate(scaled, angle)
+            data = _try_pyzbar(rotated)
+            if data:
+                return data, 'pyzbar'
+            data = _try_opencv(rotated, qr_detector)
+            if data:
+                return data, 'opencv'
+
+    # ── Otsu-thresholded (binarised) retry ──
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    data = _try_pyzbar(thresh)
+    if data:
+        return data, 'pyzbar-threshold'
+    gray_3ch = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+    data = _try_opencv(gray_3ch, qr_detector)
+    if data:
+        return data, 'opencv-threshold'
+
+    # ── WeChat QRCode detector, if the OpenCV build includes it ──
+    try:
+        wechat_detector = cv2.wechat_qrcode_WeChatQRCode()
+        texts, _ = wechat_detector.detectAndDecode(cv_img)
+        if texts:
+            return texts[0], 'wechat'
+    except Exception:
         pass
 
-# ══════════════════════════════════════════════════════════════════
-# PLOTLY THEME
-# ══════════════════════════════════════════════════════════════════
-PLOTLY_LAYOUT = dict(
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor ="rgba(0,0,0,0)",
-    font_color   ="#5a7a9a",
-    font_family  ="Rajdhani",
-    margin       =dict(l=20, r=20, t=40, b=20),
-)
-CYBER_COLORS = ["#00d4ff", "#7c3aed", "#00ff9d", "#ffb340", "#ff3366", "#3b82f6"]
+    return '', ''
 
-# ══════════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════════
-def section_header(text: str, icon: str = "◆") -> None:
-    H(f'<div class="section-header">{icon} {text}</div>')
 
-def card(content: str, extra: str = "") -> None:
-    H(f'<div class="glass-card" style="{extra}">{content}</div>')
+def analyse_qr(image_bytes: bytes) -> dict:
+    try:
+        import cv2
+        from PIL import Image
+        import numpy as np
 
-def threat_banner(result: dict) -> None:
-    level = result.get("risk_level", "SAFE")
-    emoji = result.get("risk_emoji", "🟢")
-    score = round(result.get("risk_score", 0))
-    conf  = round(result.get("confidence", 0))
-    H(f'''
-    <div class="threat-banner threat-{level}">
-        <span style="font-size:2rem">{emoji}</span>
-        <div>
-            <div style="font-family:var(--font-display);font-size:1.3rem;font-weight:700;
-                        color:var(--text);letter-spacing:0.08em">{level} THREAT</div>
-            <div style="font-size:0.8rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:2px">
-                Risk Score: <strong style="color:var(--primary)">{score}/100</strong>
-                &nbsp;·&nbsp; Confidence: <strong style="color:var(--primary)">{conf}%</strong>
-            </div>
-        </div>
-    </div>''')
+        pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        cv_img  = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-def risk_gauge(score: float, label: str = "Risk Score") -> go.Figure:
-    ri    = compute_risk_level(score)
-    color = ri["color"]
-    fig   = go.Figure(go.Indicator(
-        mode  ="gauge+number",
-        value = score,
-        title ={"text": label, "font": {"size": 13, "color": "#5a7a9a", "family": "Rajdhani"}},
-        number={"font": {"size": 30, "color": color, "family": "Orbitron"}, "suffix": "/100"},
-        gauge ={
-            "axis":       {"range": [0, 100], "tickcolor": "#1a2a3a", "tickfont": {"size": 9}},
-            "bar":        {"color": color, "thickness": 0.25},
-            "bgcolor":    "rgba(0,0,0,0)",
-            "bordercolor":"rgba(255,255,255,0.04)",
-            "steps": [
-                {"range": [0,  20],  "color": "rgba(0,255,157,0.08)"},
-                {"range": [20, 40],  "color": "rgba(59,130,246,0.08)"},
-                {"range": [40, 65],  "color": "rgba(255,179,64,0.08)"},
-                {"range": [65, 85],  "color": "rgba(255,179,64,0.12)"},
-                {"range": [85, 100], "color": "rgba(255,51,102,0.12)"},
-            ],
-            "threshold": {"line": {"color": color, "width": 3}, "value": score},
+        qr_data, decoder_used = _decode_qr_multi(cv_img)
+
+        if not qr_data:
+            return {'error': 'No QR code detected in the image. Please ensure the QR code is clear, well-lit, and not blurry.'}
+
+        # ── Step 1: identify content type (URL / EMAIL / PHONE / TEXT) ──────
+        content_type = detect_qr_content_type(qr_data)
+        is_url = content_type == 'URL'
+        logger.info("[QR Scanner] Decoded (%s) payload classified as %s: %r", decoder_used, content_type, qr_data[:120])
+
+        result = {
+            'qr_data':      qr_data,
+            'qr_type':      content_type,   # kept for backward-compat with existing UI key
+            'content_type': content_type,
+            'is_url':       is_url,
+            'decoder_used': decoder_used,
         }
-    ))
-    fig.update_layout(**PLOTLY_LAYOUT, height=210)
-    return fig
 
-def keyword_chips(keywords: list) -> None:
-    if not keywords:
-        H('<span style="color:#5a7a9a;font-size:0.82rem;font-family:monospace">No suspicious keywords detected.</span>')
-        return
-    chips = "".join(f'<span class="kw-chip">{kw}</span>' for kw in keywords[:12])
-    H(f'<div style="line-height:2.4">{chips}</div>')
+        # ── Step 2: route to the correct EXISTING pipeline — no duplicate
+        # detection logic. URLs go through the full URL scanner pipeline
+        # (feature extraction, ML prediction, webpage fetch, text scam
+        # detection, combined risk score); everything else (plain text,
+        # email address, phone number) goes through the same text-scam
+        # detection module used by the Text Scanner. ─────────────────────
+        if content_type == 'URL':
+            # Normalise bare domains (e.g. "example.com/x") to a fetchable
+            # URL before handing off, without altering analyse_url_full()
+            # itself — this keeps the URL pipeline the single source of truth.
+            target_url = qr_data if qr_data.startswith(('http://', 'https://')) else f'http://{qr_data}'
+            url_result = analyse_url_full(target_url)
+            result.update(url_result)
+        else:
+            # For EMAIL / PHONE / TEXT payloads, strip any URI scheme
+            # (mailto:/tel:) before handing to the text scam detector so it
+            # scores the actual address/number/content, not the scheme noise.
+            text_payload = re.sub(r'^(mailto:|tel:)', '', qr_data, flags=re.IGNORECASE).strip()
+            text_result = analyse_text(text_payload)
+            result.update(text_result)
 
-def recommendation_list(recs: list) -> None:
-    for i, rec in enumerate(recs):
-        H(f'<div class="rec-item" style="animation-delay:{i*0.07}s">{rec}</div>')
+        result['scan_type'] = 'QR Scanner'
+        return result
 
-def render_full_result(result: dict) -> None:
-    if "error" in result:
-        H(f'<div class="alert-error">⚠️ {result["error"]}</div>')
-        return
+    except ImportError as e:
+        return {'error': f'OpenCV not installed: {e}. Install with: pip install opencv-python-headless'}
+    except Exception as e:
+        return {'error': f'QR analysis failed: {str(e)}'}
 
-    level  = result.get("risk_level", "SAFE")
-    score  = round(result.get("risk_score", 0))
-    conf   = round(result.get("confidence", 0))
-    emoji  = result.get("risk_emoji", "🟢")
-    verdict_text = result.get("verdict", "No verdict available.")
-    recs   = result.get("recommendations", [])
-    kws    = result.get("suspicious_kws", [])
+# ─── Tesseract configuration + OCR quality scoring ──────────────────────────
+# --oem 3 = default LSTM + legacy engine combined (most accurate, tried
+#           first for everything in this pipeline)
+# --psm 6 = "assume a single uniform block of text" — the best default for
+#           screenshots, phone-camera photos of a message/document, and
+#           single-column scans, which is the overwhelming majority of
+#           CyberLens input. This is the #1 fix for the "words merged
+#           together" symptom: the default PSM (3) does full page-layout
+#           analysis and on a simple block of text it can mis-detect
+#           column/paragraph boundaries and run words together, whereas
+#           PSM 6 treats it as one block and preserves word gaps read
+#           line-by-line.
+# --psm 4 = single column of text of variable sizes — good for documents
+#           with clear paragraph/heading structure
+# --psm 3 = fully automatic page segmentation (no OSD) — safest generic
+#           fallback for scanned pages with mixed layout (multi-column,
+#           tables, embedded images)
+# --psm 11 = sparse text, no particular order — last-resort fallback for
+#           scattered/short text (banners, IDs, signage-style screenshots)
+#
+# `preserve_interword_spaces=1` is critical for requirement #2 (preserve
+# spaces between words): without it, Tesseract's internal space-collapsing
+# heuristic can drop legitimate spaces in some layouts.
+_TESS_CONFIG_ATTEMPTS = [
+    ('block',  6, 3),
+    ('auto',   3, 3),
+    ('sparse', 11, 3),
+]
 
-    # color palette by level
-    level_meta = {
-        "SAFE":     {"color": "#00ff9d", "glow": "rgba(0,255,157,0.35)", "label": "SAFE",     "status": "✅ No Threat Detected",     "pulse": "pulse-safe"},
-        "LOW":      {"color": "#3b82f6", "glow": "rgba(59,130,246,0.35)",  "label": "LOW",      "status": "🔵 Low Risk — Monitor",      "pulse": "pulse-low"},
-        "MEDIUM":   {"color": "#ffb340", "glow": "rgba(255,179,64,0.40)",  "label": "MEDIUM",   "status": "⚠️ Suspicious Content Found", "pulse": "pulse-medium"},
-        "HIGH":     {"color": "#f97316", "glow": "rgba(249,115,22,0.40)",  "label": "HIGH",     "status": "🔴 High Risk — Avoid",        "pulse": "pulse-high"},
-        "CRITICAL": {"color": "#ff3366", "glow": "rgba(255,51,102,0.45)",  "label": "CRITICAL", "status": "🚨 Critical Threat Detected", "pulse": "pulse-critical"},
-    }
-    meta   = level_meta.get(level, level_meta["SAFE"])
-    color  = meta["color"]
-    glow   = meta["glow"]
-    pulse  = meta["pulse"]
-    status = meta["status"]
 
-    # Build HTML fragments used inside the big f-string below
-    if kws:
-        kw_chips_html = "".join(f'<span class="kw-chip">{kw}</span>' for kw in kws[:12])
-    else:
-        kw_chips_html = '<span style="color:#5a7a9a;font-size:0.82rem;font-family:monospace">No suspicious keywords detected.</span>'
+# Combined Tesseract language string so a single OCR pass can read mixed-
+# script images/PDF pages (English + the Indic languages + Spanish already
+# supported by language_utils.py) instead of only reading Latin script well.
+#
+# ⚠️ DEPLOYMENT REQUIREMENT: this requires the matching Tesseract
+# traineddata files to be installed on the server. On Streamlit Community
+# Cloud, add a packages.txt with:
+#   tesseract-ocr-tam
+#   tesseract-ocr-hin
+#   tesseract-ocr-tel
+#   tesseract-ocr-mal
+#   tesseract-ocr-kan
+#   tesseract-ocr-spa
+# (tesseract-ocr-eng ships with the base tesseract-ocr package.)
+#
+# _get_tesseract_lang() uses whichever of these packs are ACTUALLY
+# installed rather than an all-or-nothing check — with an all-or-nothing
+# check, installing 5 of 6 packs still silently gives you English-only OCR
+# (and if none of the requested extra languages are installed, Tesseract
+# doesn't error, it silently returns an EMPTY result for the whole page —
+# confirmed by testing directly against Tesseract 5.3.4). Using the
+# intersection of "wanted" and "installed" means partial deployments still
+# get partial multi-language support instead of none, and never sends a
+# language string Tesseract will refuse to honour.
+_TESSERACT_LANG_FULL = 'eng+tam+hin+tel+mal+kan+spa'
+_TESSERACT_LANG_FAST = 'eng'   # cheap first-pass probe language
+_tesseract_lang_cache = {'lang': None, 'missing': None}
 
-    rec_html = "".join(
-        f'<div class="rec-item" style="animation-delay:{i*0.07}s">{rec}</div>'
-        for i, rec in enumerate(recs)
+
+def _get_tesseract_lang() -> str:
+    """
+    Return the Tesseract lang string built from the intersection of
+    _TESSERACT_LANG_FULL and whatever traineddata is actually installed
+    (checked once per process via pytesseract.get_languages(), then
+    cached). Always includes 'eng'. Logs which requested languages are
+    missing so a partial/incomplete packages.txt is diagnosable from
+    server logs, and also exposes the missing set via
+    _tesseract_lang_missing() so callers can surface it to the user
+    instead of it only living in logs.
+    """
+    if _tesseract_lang_cache['lang'] is not None:
+        return _tesseract_lang_cache['lang']
+
+    import pytesseract
+    wanted = set(_TESSERACT_LANG_FULL.split('+'))
+    try:
+        installed = set(pytesseract.get_languages(config=''))
+    except Exception as e:
+        logger.warning("[OCR] Could not query installed Tesseract languages (%s); "
+                        "defaulting to English-only OCR.", e)
+        installed = {'eng'}
+
+    usable = wanted & installed
+    usable.add('eng')  # always include English regardless of intersection result
+    missing = sorted(wanted - installed)
+
+    if missing:
+        logger.warning(
+            "[OCR] Missing Tesseract traineddata for: %s — those languages "
+            "won't be OCR'd until packages.txt is deployed with them. "
+            "Currently OCR-ready languages: %s",
+            ', '.join(missing), '+'.join(sorted(usable))
+        )
+
+    _tesseract_lang_cache['lang'] = '+'.join(sorted(usable))
+    _tesseract_lang_cache['missing'] = missing
+    return _tesseract_lang_cache['lang']
+
+
+def _tesseract_lang_missing() -> list:
+    """Requested-but-not-installed language codes, populated by _get_tesseract_lang()."""
+    if _tesseract_lang_cache['missing'] is None:
+        _get_tesseract_lang()
+    return _tesseract_lang_cache['missing'] or []
+
+
+def _tesseract_config(psm: int, oem: int) -> str:
+    return f'--oem {oem} --psm {psm} -c preserve_interword_spaces=1'
+
+
+def _ocr_quality_score(text: str) -> float:
+    """
+    Heuristic score (higher = better) used to pick the best result among
+    several preprocessing/--psm attempts, without needing ground truth.
+
+    Rewards a healthy ratio of alphabetic content and typical English word
+    lengths; penalises the two failure signatures we care about most:
+      - merged words -> very few, abnormally long "words"
+      - shredded/noisy output -> lots of 1-2 character fragments
+    """
+    words = text.split()
+    if not words:
+        return -1.0
+
+    total_chars = max(len(text), 1)
+    alpha_ratio = sum(c.isalpha() for c in text) / total_chars
+    lengths = [len(w) for w in words]
+    avg_len = sum(lengths) / len(lengths)
+    long_word_ratio = sum(1 for l in lengths if l > 15) / len(words)
+    tiny_word_ratio = sum(1 for l in lengths if l == 1) / len(words)
+
+    score  = alpha_ratio * 10
+    score -= long_word_ratio * 8      # signature of merged words
+    score -= tiny_word_ratio * 3      # signature of shredded/garbled text
+    score -= abs(avg_len - 5.0) * 0.3  # typical English avg word length ~4.7
+    score += min(len(words), 200) * 0.01  # mild reward for recovering more text
+    return score
+
+
+def _mean_word_confidence(ocr_data: dict) -> float:
+    """
+    Mean Tesseract per-word confidence (0-100) over words with conf > 0,
+    from image_to_data(output_type=Output.DICT). Returns -1.0 if there are
+    no confident words at all (e.g. blank/unreadable image), so it always
+    compares sensibly against other candidates.
+    """
+    confs = [float(c) for c in ocr_data.get('conf', []) if c not in (None, '', '-1') and float(c) > 0]
+    if not confs:
+        return -1.0
+    return sum(confs) / len(confs)
+
+
+def _ocr_with_data(pil_img, psm: int, oem: int, lang: str):
+    """
+    Run Tesseract once via image_to_data() (so we get per-word confidence
+    for free) and reconstruct the plain text from the word list. Returns
+    (text, mean_confidence, ocr_data_dict). ocr_data_dict is returned so
+    callers can optionally do per-line language tagging
+    (language_utils.tag_segments_from_ocr_data) without a second OCR call.
+    """
+    import pytesseract
+    from pytesseract import Output
+
+    config = _tesseract_config(psm, oem)
+    data = pytesseract.image_to_data(pil_img, lang=lang, config=config, output_type=Output.DICT)
+
+    # Rebuild text grouped by line so spacing/line breaks look like
+    # image_to_string's output (image_to_data gives one row per word).
+    lines = {}
+    order = []
+    n = len(data.get('text', []))
+    for i in range(n):
+        word = (data['text'][i] or '').strip()
+        if not word:
+            continue
+        key = (data['block_num'][i], data['par_num'][i], data['line_num'][i])
+        if key not in lines:
+            lines[key] = []
+            order.append(key)
+        lines[key].append(word)
+    text = '\n'.join(' '.join(lines[k]) for k in order).strip()
+
+    return text, _mean_word_confidence(data), data
+
+
+def _ocr_best_of(pil_img, quick: bool = False):
+    """
+    Run Tesseract and keep the best-scoring result, using a two-tier
+    language strategy so most documents stay fast:
+
+      Tier 1 (always): a single fast probe with English-only ('eng').
+      Most images/pages are plain English/Latin-script documents, and
+      multi-language Tesseract calls are measurably slower than
+      single-language ones (~3x slower with 3 languages loaded,
+      confirmed by direct timing) — so paying that cost on every image
+      regardless of content was the main source of the slowdown.
+
+      Tier 2 (only if Tier 1 looks weak): escalate to the combined
+      multi-language string from _get_tesseract_lang() — this is where
+      non-Latin script (Tamil/Hindi/Telugu/Malayalam/Kannada) or Spanish
+      actually gets recognised. "Weak" means low confidence, a low
+      heuristic score, or literally no text — the signature of either a
+      hard image or non-English content, both of which justify the
+      extra cost. If no extra language packs are installed, Tier 2 is
+      skipped entirely (it would just repeat Tier 1's language for no
+      gain).
+
+    Selection within each tier blends two signals:
+      - Tesseract's own mean per-word confidence from image_to_data()
+        (more reliable than text-shape heuristics alone), and
+      - the existing _ocr_quality_score() heuristic, as a tie-breaker
+        since confidence alone can be fooled by a confidently-wrong
+        low-PSM misread.
+
+    quick=True (used for PDF pages that already look fine, or the 600 DPI
+    escalation) only tries the single best-default config (`block`,
+    psm 6) per tier, to bound the extra runtime. Full mode tries all 3
+    per tier and stops early once a config already scores comfortably
+    well on both signals, so easy images still only cost one Tesseract
+    call in practice.
+
+    Returns (text, mean_confidence) — mean_confidence is -1.0 if nothing
+    was recognised.
+    """
+    attempts = _TESS_CONFIG_ATTEMPTS[:1] if quick else _TESS_CONFIG_ATTEMPTS
+
+    def _run(lang, cfg_attempts):
+        text, conf, combined = '', -1.0, float('-inf')
+        for _, psm, oem in cfg_attempts:
+            try:
+                t, c, _data = _ocr_with_data(pil_img, psm, oem, lang)
+            except Exception:
+                continue
+            if not t:
+                continue
+            score = _ocr_quality_score(t)
+            # Normalise confidence (0-100) onto roughly the same scale as
+            # the heuristic score (~ -8..+12) so neither signal dominates
+            # by accident, then blend: confidence carries slightly more
+            # weight since it reflects Tesseract's own certainty about
+            # the specific characters recognised, not just output shape.
+            comb = (c / 100.0) * 12.0 * 0.6 + score * 0.4
+            if comb > combined:
+                text, conf, combined = t, c, comb
+            if c > 80.0 and score > 6.0:   # already good on both signals
+                break
+        return text, conf, combined
+
+    # ── Tier 1: fast English-only probe ──
+    fast_text, fast_conf, fast_combined = _run(_TESSERACT_LANG_FAST, attempts[:1])
+
+    fast_is_weak = (
+        not fast_text
+        or fast_conf < 60.0
+        or _ocr_quality_score(fast_text) < 4.0
     )
 
-    # Build URL details panel from known URL result keys (present on URL/QR scans)
-    _url_field_labels = {
-        "url":            ("🔗", "Scanned URL"),
-        "domain":         ("🌐", "Domain"),
-        "tld":            ("📌", "TLD"),
-        "is_https":       ("🔒", "HTTPS"),
-        "has_ip":         ("🖥️", "IP as Domain"),
-        "is_long":        ("📏", "Long URL"),
-        "is_known_legit": ("✅", "Known Legit Domain"),
-        "typosquat_risk": ("⚠️", "Typosquatting Risk"),
-        "trust_score":    ("💯", "Trust Score"),
-    }
-    url_detail_items = {
-        label: (icon, result[key])
-        for key, (icon, label) in _url_field_labels.items()
-        if key in result
-    }
+    full_lang = _get_tesseract_lang()
+    other_langs_available = full_lang != _TESSERACT_LANG_FAST
 
-    # NOTE: The AI URL model still runs fully in the backend (see
-    # analyzer.analyse_url_full() / url_model.predict_url() /
-    # get_feature_importance_url(), Stage 2) and its outputs (url_ml_label,
-    # url_ml_probability, url_ml_fetched, url_ml_fetch_error, fetch_note,
-    # url_ml_top_signals) remain in `result` and feed the risk score below.
-    # They are intentionally not rendered in the UI anymore.
-    _ai_rows_count = 0
+    if fast_is_weak and other_langs_available:
+        # ── Tier 2: escalate to the multi-language pass ──
+        full_text, full_conf, full_combined = _run(full_lang, attempts)
+        if full_combined > fast_combined:
+            return full_text, full_conf
+        return fast_text, fast_conf
 
-    if url_detail_items:
-        url_rows = "".join(
-            f'<div class="data-row"><span class="dr-icon">{icon}</span>'
-            f'<span class="dr-label">{label}</span>'
-            f'<span class="dr-val">{val}</span></div>'
-            for label, (icon, val) in url_detail_items.items()
-        )
-        # Also show URL flags if any
-        url_flags = result.get("flags", [])
-        if url_flags:
-            url_rows += "".join(
-                f'<div class="data-row"><span class="dr-icon">🚩</span>'
-                f'<span class="dr-label">Flag</span>'
-                f'<span class="dr-val" style="color:#f97316">{f}</span></div>'
-                for f in url_flags
+    if not quick and fast_combined < 6.0 and len(attempts) > 1:
+        # Fast pass wasn't great but doesn't look non-English either
+        # (already checked above) and other language packs aren't the
+        # answer — try the remaining psm configs in English before
+        # giving up, preserving the old "try all 3 configs" behaviour
+        # for genuinely hard-but-English images.
+        rest_text, rest_conf, rest_combined = _run(_TESSERACT_LANG_FAST, attempts[1:])
+        if rest_combined > fast_combined:
+            return rest_text, rest_conf
+
+    return fast_text, fast_conf
+
+
+def _split_merged_words(text: str, min_len: int = 12) -> str:
+    """
+    Optional best-effort pass using the `wordninja` library (dictionary-
+    based word segmentation) to break up runs like "thestudentwashappy"
+    back into "the student was happy". This is the one step in the
+    pipeline that can occasionally mis-split a genuine long word or proper
+    noun, so it's applied ONLY to tokens that are purely alphabetic,
+    lowercase, and longer than `min_len` characters — short/mixed-case
+    tokens are left untouched to keep false positives rare.
+
+    Silently no-ops if wordninja isn't installed (`pip install wordninja`);
+    this is a nice-to-have layered on top of the config/preprocessing
+    fixes above, not a hard dependency.
+    """
+    try:
+        import wordninja
+    except ImportError:
+        return text
+
+    def _fix(match):
+        word = match.group(0)
+        if len(word) <= min_len or not word.islower():
+            return word
+        pieces = wordninja.split(word)
+        return ' '.join(pieces) if len(pieces) > 1 else word
+
+    try:
+        return re.sub(r'[a-z]+', _fix, text)
+    except Exception:
+        return text
+
+
+def _clean_ocr_text(text: str) -> str:
+    """
+    Normalise raw Tesseract output into clean, readable text
+    (requirement #5 — automatic OCR output cleanup):
+
+      1. Normalise line endings and strip stray control characters.
+      2. Rejoin words split by a line-wrap hyphen: "informa-\\ntion" ->
+         "information".
+      3. Rebuild paragraphs (requirement #3): split on blank lines, join
+         the wrapped lines *within* each paragraph into one continuous
+         line, then separate paragraphs from each other with a single
+         blank line. This turns Tesseract's raw "one physical line per
+         newline" output into actual paragraphs instead of either one
+         giant blob or a choppy line-per-newline mess.
+      4. Insert a space that Tesseract dropped at an obvious word boundary:
+         a lowercase letter immediately followed by a capital letter
+         ("...wordNextWord" -> "...word Next Word"), or a punctuation mark
+         immediately followed by a letter with no space ("end.Start" ->
+         "end. Start"). Deliberately conservative so it doesn't touch
+         genuine camelCase-like OCR noise or acronyms.
+      5. Collapse doubled/tripled spaces left over from the above.
+    """
+    if not text:
+        return text
+
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+
+    # Rejoin hyphenated line-wraps
+    text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)
+
+    # Rebuild paragraphs: join wrapped lines within a paragraph, keep
+    # blank-line-separated paragraphs as separate blocks
+    paragraphs = re.split(r'\n\s*\n', text)
+    cleaned_paragraphs = []
+    for para in paragraphs:
+        lines = [ln.strip() for ln in para.split('\n') if ln.strip()]
+        if lines:
+            cleaned_paragraphs.append(' '.join(lines))
+    text = '\n\n'.join(cleaned_paragraphs)
+
+    # Insert obviously-missing spaces at word/sentence boundaries
+    text = re.sub(r'([a-z])([A-Z][a-z])', r'\1 \2', text)
+    text = re.sub(r'([.!?,;:])([A-Za-z])', r'\1 \2', text)
+
+    # Collapse repeated horizontal whitespace (leave paragraph newlines alone)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r'[ \t]*\n[ \t]*', '\n', text)
+
+    return text.strip()
+
+
+def analyse_ocr_image(image_bytes: bytes) -> dict:
+    try:
+        import pytesseract
+        from PIL import Image
+
+        pil_img = Image.open(io.BytesIO(image_bytes))
+
+        # ── Preprocess for accuracy: deskew, grayscale, contrast
+        # enhancement, sharpening, denoising, thresholding — then OCR the
+        # cleaned-up image with several --psm/--oem configs and keep the
+        # best-scoring one (see _ocr_best_of / requirement #6). Also try
+        # the raw (unprocessed) image the same way and keep whichever of
+        # the two — enhanced or raw — scores better overall, since on rare
+        # images the enhancement can hurt more than it helps. ──
+        candidates = []  # list of (text, mean_confidence)
+        try:
+            enhanced = _enhance_image_for_ocr(pil_img)
+            enhanced_text, enhanced_conf = _ocr_best_of(enhanced)
+            if enhanced_text:
+                candidates.append((enhanced_text, enhanced_conf))
+        except Exception as _enh_err:
+            logger.warning("[OCR] Image preprocessing failed: %s", _enh_err)
+
+        # Only pay for a second full OCR pass on the raw image if the
+        # enhanced result looks weak or is missing. "Weak" is now judged
+        # on Tesseract's own mean confidence first (more reliable,
+        # especially across multiple languages at once), falling back to
+        # the heuristic score if confidence is unavailable — on the large
+        # majority of images the enhanced pass alone is already good, so
+        # running a second (up to 3-config) OCR pass unconditionally here
+        # was doubling OCR time for little benefit.
+        if not candidates or candidates[0][1] < 55.0 or _ocr_quality_score(candidates[0][0]) < 6.0:
+            try:
+                raw_text, raw_conf = _ocr_best_of(pil_img)
+                if raw_text:
+                    candidates.append((raw_text, raw_conf))
+            except Exception:
+                pass
+
+        if not candidates:
+            return {'error': 'No text could be extracted from this image. Ensure the image is clear and contains readable text.'}
+
+        # Pick the candidate with the best blended confidence+heuristic
+        # score (same blend used inside _ocr_best_of, kept consistent).
+        def _candidate_rank(c):
+            text, conf = c
+            return (conf / 100.0) * 12.0 * 0.6 + _ocr_quality_score(text) * 0.4
+
+        extracted, extracted_conf = max(candidates, key=_candidate_rank)
+
+        # ── Automatic cleanup (requirement #5) ──
+        extracted = _clean_ocr_text(extracted)
+        extracted = _split_merged_words(extracted)
+
+        if not extracted:
+            return {'error': 'No text could be extracted from this image. Ensure the image is clear and contains readable text.'}
+
+        analysis = analyse_text(extracted)
+        analysis['extracted_text']    = extracted
+        analysis['char_count']        = len(extracted)
+        analysis['word_count']        = len(extracted.split())
+        analysis['scan_type']         = 'OCR Scanner'
+        missing_langs = _tesseract_lang_missing()
+        if missing_langs:
+            analysis['ocr_languages_unavailable'] = missing_langs
+        analysis['ocr_confidence']    = round(extracted_conf, 1)
+        # Per-line language tags (additive) — mixed-script images now get a
+        # language tag per line instead of one whole-document guess.
+        try:
+            analysis['language_segments'] = tag_segments(extracted)
+        except Exception:
+            analysis['language_segments'] = []
+        return analysis
+
+    except ImportError as e:
+        return {'error': f'pytesseract not installed or Tesseract binary missing: {e}'}
+    except Exception as e:
+        return {'error': f'OCR failed: {str(e)}'}
+
+_PDF_MAX_RENDER_PAGES = 20  # cap on pages rendered to images, to keep runtime bounded on huge PDFs
+
+def _render_pdf_pages_high_res(pdf_bytes, dpi=300, max_pages=_PDF_MAX_RENDER_PAGES):
+    """
+    Render PDF pages to high-resolution PIL images (default 300 DPI, can go
+    up to 600 DPI for hard-to-read scans) using PyMuPDF. Used to OCR
+    scanned/image-only pages and to scan every page for QR codes. Returns
+    a list of PIL.Image objects — empty if PyMuPDF isn't installed or
+    rendering fails, so callers must tolerate an empty list and simply
+    keep whatever text-layer extraction they already have.
+    """
+    try:
+        import fitz  # PyMuPDF
+        from PIL import Image
+    except ImportError:
+        return []
+
+    images = []
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+        matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+        for i, page in enumerate(doc):
+            if i >= max_pages:
+                break
+            pix = page.get_pixmap(matrix=matrix)
+            mode = 'RGB' if pix.n < 4 else 'RGBA'
+            img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+            images.append(img.convert('RGB'))
+        doc.close()
+    except Exception as e:
+        logger.warning("[PDF] High-res page rendering failed: %s", e)
+    return images
+
+
+def _render_pdf_page_at_dpi(pdf_bytes, page_index, dpi):
+    """Re-render a single PDF page at a specific (higher) DPI. Returns a
+    PIL.Image or None on failure."""
+    try:
+        import fitz
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+        if page_index >= len(doc):
+            doc.close()
+            return None
+        matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+        pix = doc[page_index].get_pixmap(matrix=matrix)
+        mode = 'RGB' if pix.n < 4 else 'RGBA'
+        img = Image.frombytes(mode, (pix.width, pix.height), pix.samples).convert('RGB')
+        doc.close()
+        return img
+    except Exception as e:
+        logger.warning("[PDF] Page %d re-render at %d DPI failed: %s", page_index, dpi, e)
+        return None
+
+
+def _page_text_is_weak(text: str, min_chars: int = 25, min_words: int = 5) -> bool:
+    """
+    Decide whether a PDF page's embedded text layer counts as genuinely
+    "searchable" (requirement #8: extract directly, skip OCR) or should be
+    treated as scanned/image-only (requirement #7: OCR it).
+
+    A page is "weak" (-> OCR it) if it has no text layer at all, or if the
+    text layer is so sparse (a handful of characters/words) that it's
+    almost certainly a stray watermark, page number, or extraction
+    artifact rather than the page's real body text — the previous check
+    (`pt and pt.strip()`) treated even a couple of stray characters as
+    "this page is searchable," which under-triggered OCR on pages that
+    were actually scanned images with a tiny bit of leaked text metadata.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    alnum_chars = sum(c.isalnum() for c in stripped)
+    words = stripped.split()
+    return alnum_chars < min_chars or len(words) < min_words
+
+
+def _looks_column_jumbled(text: str) -> bool:
+    """
+    Cheap heuristic to flag pages where plain extract_text() likely
+    scrambled reading order (common on multi-column layouts and tables):
+    lots of very short, oddly-interleaved line fragments rather than
+    normal sentence-length lines. Used only to decide whether the heavier
+    layout-aware extract_text(layout=True) pass is worth trying — false
+    positives just cost one extra (still cheap, text-layer-only) call, so
+    this is intentionally biased toward "try it" over precision.
+    """
+    lines = [ln.strip() for ln in text.split('\n') if ln.strip()]
+    if len(lines) < 6:
+        return False  # too short a page for column-scrambling to matter
+
+    word_counts = [len(ln.split()) for ln in lines]
+    avg_words = sum(word_counts) / len(word_counts)
+    short_line_ratio = sum(1 for w in word_counts if w <= 2) / len(word_counts)
+
+    # Short-line-heavy AND low average words/line is the signature of
+    # column text extracted as narrow horizontal slices instead of
+    # reading order.
+    return short_line_ratio > 0.45 and avg_words < 4.0
+
+
+def analyse_pdf(pdf_bytes: bytes) -> dict:
+    try:
+        import pdfplumber
+
+        text_pages  = []
+        page_count  = 0
+        weak_pages  = []   # indices of pages with little/no extractable text (likely scanned)
+
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            page_count = len(pdf.pages)
+            for idx, page in enumerate(pdf.pages):
+                pt = page.extract_text()
+
+                # Layout-aware fallback: plain extract_text() can scramble
+                # reading order on multi-column pages/pages with tables.
+                # Only pay for the heavier layout-aware pass when the fast
+                # path looks jumbled, so normal single-column PDFs keep the
+                # original (fast) behaviour.
+                if pt and _looks_column_jumbled(pt):
+                    try:
+                        layout_pt = page.extract_text(layout=True)
+                        if layout_pt and not _page_text_is_weak(layout_pt):
+                            pt = layout_pt
+                    except Exception:
+                        pass
+
+                if not _page_text_is_weak(pt):
+                    # Searchable page — use the direct text layer as-is
+                    # (requirement #8), no OCR needed for this page at all.
+                    text_pages.append(pt)
+                else:
+                    weak_pages.append(idx)
+                if sum(len(t) for t in text_pages) >= 3000:
+                    break
+
+        full_text = '\n'.join(text_pages)[:3000]
+
+        # ── High-res OCR + QR pass (additive — never removes text already
+        # extracted above) ───────────────────────────────────────────────
+        # Renders pages at 300 DPI (600 DPI retry for pages that still OCR
+        # poorly), then:
+        #   1. OCRs any page pdfplumber found little/no text on, using the
+        #      same preprocessing pipeline as analyse_ocr_image().
+        #   2. Scans every rendered page for QR codes with the same
+        #      multi-scale/multi-decoder logic as analyse_qr().
+        # Degrades gracefully to the pre-existing text-only behaviour if
+        # PyMuPDF isn't installed.
+        qr_codes  = []
+        ocr_added = False
+        page_lang_segments = []
+        try:
+            page_images = _render_pdf_pages_high_res(pdf_bytes, dpi=300)
+
+            if page_images:
+                import cv2
+                import numpy as np
+                import pytesseract
+
+                ocr_chunks = []
+                for i, img in enumerate(page_images):
+                    # ── OCR pages with weak/no text layer (requirement #7:
+                    # scanned pages get OCR'd; searchable pages never reach
+                    # here at all since they weren't added to weak_pages) ──
+                    if (i in weak_pages or not full_text.strip()) and sum(len(c) for c in ocr_chunks) < 3000:
+                        page_ocr_text, page_ocr_conf = '', -1.0
+                        try:
+                            enhanced = _enhance_image_for_ocr(img)
+                            # quick=True: one well-chosen config (psm 6) per
+                            # page keeps the per-page cost roughly the same
+                            # as before, instead of trying all 3 configs on
+                            # every page of a large PDF (requirement #9).
+                            page_ocr_text, page_ocr_conf = _ocr_best_of(enhanced, quick=True)
+                        except Exception:
+                            pass
+
+                        # Escalate to 600 DPI + the full auto-config search
+                        # only if the 300 DPI pass barely got anything OR
+                        # Tesseract itself wasn't confident in what it did
+                        # get — confidence catches cases where a full page
+                        # of low-quality text came back (length looks fine)
+                        # but Tesseract is guessing at most of it. This is
+                        # where the extra accuracy is worth the extra cost,
+                        # since it only fires on genuinely hard pages.
+                        if len(page_ocr_text) < 30 or page_ocr_conf < 45.0:
+                            hi_res_img = _render_pdf_page_at_dpi(pdf_bytes, i, dpi=600)
+                            if hi_res_img is not None:
+                                try:
+                                    enhanced_hi = _enhance_image_for_ocr(hi_res_img)
+                                    hi_text, hi_conf = _ocr_best_of(enhanced_hi)
+                                    # Prefer the 600 DPI pass if it's either
+                                    # longer or Tesseract is more confident
+                                    # in it, not just longer (a longer but
+                                    # low-confidence result isn't actually
+                                    # better).
+                                    if hi_text and (len(hi_text) > len(page_ocr_text) or hi_conf > page_ocr_conf):
+                                        page_ocr_text, page_ocr_conf = hi_text, hi_conf
+                                except Exception:
+                                    pass
+
+                        if page_ocr_text:
+                            cleaned_page_text = _clean_ocr_text(page_ocr_text)
+                            ocr_chunks.append(cleaned_page_text)
+                            ocr_added = True
+                            try:
+                                for seg in tag_segments(cleaned_page_text):
+                                    seg['page'] = i + 1
+                                    page_lang_segments.append(seg)
+                            except Exception:
+                                pass
+
+                    # ── Scan this page for QR codes ──
+                    try:
+                        cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                        data, decoder_used = _decode_qr_multi(cv_img)
+                        if data:
+                            qr_codes.append({
+                                'page':         i + 1,
+                                'data':         data,
+                                'content_type': detect_qr_content_type(data),
+                                'decoder_used': decoder_used,
+                            })
+                    except Exception:
+                        pass
+
+                if ocr_chunks:
+                    full_text = (full_text + '\n\n' + '\n\n'.join(ocr_chunks)).strip()[:3000]
+        except Exception as e:
+            logger.warning("[PDF] High-res OCR/QR pass failed: %s", e)
+
+        if not full_text.strip() and qr_codes:
+            # Image-only PDF with no OCR-able text, but QR codes were found —
+            # use their decoded payloads as the analysable text instead of
+            # failing outright.
+            full_text = ' '.join(q['data'] for q in qr_codes)[:3000]
+
+        if not full_text.strip():
+            return {'error': 'No readable text found in this PDF (it may be scanned or image-only).'}
+
+        analysis = analyse_text(full_text)
+        analysis['page_count']    = page_count
+        analysis['word_count']    = len(full_text.split())
+        analysis['char_count']    = len(full_text)
+        analysis['preview_text']  = full_text[:500]
+        analysis['scan_type']     = 'PDF Scanner'
+        missing_langs = _tesseract_lang_missing()
+        if missing_langs and ocr_added:
+            analysis['ocr_languages_unavailable'] = missing_langs
+        analysis['qr_codes']      = qr_codes
+        analysis['ocr_applied']   = ocr_added
+        analysis['language_segments'] = page_lang_segments if ocr_added else []
+        return analysis
+
+    except ImportError:
+        try:
+            import PyPDF2
+            reader     = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+            page_count = len(reader.pages)
+            texts      = []
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    texts.append(t)
+            full_text = '\n'.join(texts)[:3000]
+            if not full_text.strip():
+                return {'error': 'No text extracted from PDF.'}
+            analysis = analyse_text(full_text)
+            analysis['page_count']   = page_count
+            analysis['word_count']   = len(full_text.split())
+            analysis['char_count']   = len(full_text)
+            analysis['preview_text'] = full_text[:500]
+            analysis['scan_type']    = 'PDF Scanner'
+            return analysis
+        except Exception as e2:
+            return {'error': f'PDF extraction failed: {e2}'}
+    except Exception as e:
+        return {'error': f'PDF analysis failed: {str(e)}'}
+
+def analyse_company(name: str, email: str, website: str) -> dict:
+    """
+    Full Company Verifier pipeline.
+
+    Reuses the existing scanning pipelines rather than re-implementing them:
+      - analyse_url_full()        → the same URL Scanner pipeline (heuristics +
+                                      live page fetch + text ML + URL ML model)
+                                      used on the URL Scanner page, run here
+                                      against the company website.
+      - analyse_email_full()      → recruiter-email pipeline (public/disposable
+                                      provider checks, domain-vs-website match,
+                                      scam keywords, entropy, digit ratio,
+                                      typosquatting) from utils.py.
+      - verify_company_identity() → cross-checks the claimed company name
+                                      against the website domain, page title,
+                                      and fetched page text.
+
+    On top of those three pipelines, this function adds one more layer:
+    cross-verification between all three inputs (name <-> email <-> website),
+    then folds everything into a single 0-100 trust score with a level
+    classification (Safe / Low / Medium / High / Critical) and a set of
+    human-readable explanation bullets.
+    """
+    name    = (name or '').strip()
+    email   = (email or '').strip()
+    website = (website or '').strip()
+
+    # 1. Run each existing pipeline
+    url_result = analyse_url_full(website) if website else None
+    website_domain = (url_result.get('domain', '') if url_result else '') or ''
+
+    content = (url_result or {}).get('content_analysis', {}) or {}
+    page_text = content.get('extracted_text', '') or content.get('content_snippet', '')
+
+    identity_result = verify_company_identity(
+        name, website_domain=website_domain,
+        page_title=page_text, page_text=page_text,
+    )
+    email_result = analyse_email_full(
+        email, website_domain=website_domain, company_name=name,
+    ) if email else None
+
+    # 2. Cross-verification between name / email / website
+    cross_flags = []
+    cross_penalty = 0
+
+    email_domain = (email_result or {}).get('domain', '') if email_result else ''
+
+    if name and email_result and email_domain:
+        name_tokens = identity_result.get('tokens', [])
+        significant = [t for t in name_tokens if len(t) >= 4] or name_tokens
+        email_blob  = f"{email_result.get('local_part','')} {email_domain}".lower()
+        name_in_email = any(t in email_blob for t in significant) if significant else False
+        if significant and not name_in_email and not email_result.get('domain_matches_website'):
+            cross_flags.append(
+                f'Recruiter email ("{email}") appears unrelated to the company name ("{name}")'
             )
-        url_details_html = (
-            f'<div class="cyber-divider" style="margin:1.25rem 0"></div>'
-            f'<div class="section-header">🌐 URL Details</div>'
-            f'<div style="margin-top:0.5rem">{url_rows}</div>'
+            cross_penalty += 20
+
+    if email_result and email_result.get('domain_matches_website') is False and website_domain:
+        cross_flags.append(
+            f'Website ("{website_domain}") and recruiter email domain ("{email_domain}") do not match'
         )
-    else:
-        url_details_html = ""
-
-    # ── Website Content Analysis (live fetch + text ML) ─────────────────────────
-    # Uses the real fetch performed in analyzer.analyse_webpage_content() /
-    # analyse_url_full() — content_analysis holds the fetched page data.
-    #
-    # UI-ONLY RESTRICTION: this section is only ever built when the current
-    # result came from the URL Scanner page (result["scan_type"] == "URL
-    # Scanner"). analyse_url_full() also gets invoked from inside QR Scanner
-    # and Company Verifier, but those overwrite `scan_type` to their own page
-    # name before render_full_result() ever sees the result, so this check
-    # cleanly limits the section to the URL Scanner without touching any
-    # analysis/scoring logic.
-    content_analysis_html = ""
-    _raw_text = ""
-    if result.get("scan_type") == "URL Scanner":
-        _content       = result.get("content_analysis", {}) or {}
-        _dbg           = result.get("debug_logs", {}) or {}
-        _site_opened   = bool(_content.get("fetched"))
-        _access_color  = "#00ff9d" if _site_opened else "#ff3366"
-        _access_icon   = "✅" if _site_opened else "❌"
-        _access_text   = "Opened successfully" if _site_opened else "Failed to open"
-
-        _raw_text      = (_content.get("extracted_text") or "").strip()
-        _kw_score      = _content.get("keyword_score_normalised", _content.get("keyword_score_raw", 0))
-        _text_ml_label = result.get("text_model_label") or "N/A"
-        _text_ml_prob  = result.get("text_model_probability", 0)
-        _final_combined= _dbg.get("final_hybrid_score", score)
-
-        if _raw_text:
-            _preview_len   = 300
-            _text_escaped  = _html.escape(_raw_text)
-            _preview_html  = _html.escape(_raw_text[:_preview_len])
-            _remainder_html= _html.escape(_raw_text[_preview_len:])
-            if len(_raw_text) > _preview_len:
-                _text_block = (
-                    f'{_preview_html}…'
-                    f'<details style="display:inline">'
-                    f'<summary style="cursor:pointer;color:#00d4ff;font-family:monospace;'
-                    f'font-size:.72rem;display:inline;margin-left:.4rem">Show More</summary>'
-                    f'<span>{_remainder_html}</span></details>'
-                )
-            else:
-                _text_block = _text_escaped
-        else:
-            _text_block = '<span style="color:#5a7a9a">No text could be extracted from this page.</span>'
-
-        content_analysis_html = f'''
-  <div class="divider"></div>
-  <div class="section-hdr">🌐 Website Content Analysis</div>
-  <div class="data-row"><span class="dr-icon">{_access_icon}</span>
-    <span class="dr-label">Website Access</span>
-    <span class="dr-val" style="color:{_access_color};font-weight:700">{_access_text}</span></div>
-  <div class="data-row" style="flex-direction:column;align-items:flex-start">
-    <span class="dr-label" style="margin-bottom:.4rem">Extracted Website Text</span>
-    <div style="color:#c8d8e8;font-size:.82rem;line-height:1.65">{_text_block}</div>
-  </div>
-  <div class="data-row"><span class="dr-icon">📊</span>
-    <span class="dr-label">Final Combined Score</span>
-    <span class="dr-val" style="color:{color};font-weight:700">{round(_final_combined)}/100</span></div>
-'''
-
-    # ── SVG ring math ────────────────────────────────────────────────────────────
-    radius = 52
-    circ   = round(2 * 3.14159 * radius, 2)   # ≈ 326.73
-    dash   = round(circ * score / 100, 2)
-    gap    = round(circ - dash, 2)
-    status_text = status.split(" ", 1)[1] if " " in status else status
-    label_str   = meta["label"]
-
-    # ── Use st.components to render the full result card (SVG safe) ───────────
-    # Dynamic height: base + extras for keywords and recommendations
-    # NOTE: _kw_rows is still computed (kept intact — it's derived from `kws`,
-    # which continues to be used for backend risk scoring elsewhere) but is no
-    # longer added into _height, since the Suspicious Indicators section that
-    # used to occupy that vertical space is no longer rendered in the UI.
-    _kw_rows  = max(1, len(kws) // 4)
-    _rec_rows = len(recs)
-    _url_rows = len(url_detail_items) if url_detail_items else 0
-    _text_extra = min(240, len(_raw_text) // 4) if _raw_text else 40
-    _height   = 700 + (_rec_rows * 65) + (_url_rows * 48) + (_ai_rows_count * 48) + 260 + _text_extra
-
-    import streamlit.components.v1 as components
-    components.html(f"""
-<!DOCTYPE html>
-<html>
-<head>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
-<style>
-  body {{ margin:0; padding:0; background:transparent; font-family:'Rajdhani',sans-serif; }}
-  .result-card {{
-    background:rgba(255,255,255,0.025);
-    border:1px solid {color}44;
-    border-radius:20px;
-    padding:1.75rem 2rem;
-    box-shadow:0 0 40px {glow};
-    position:relative;
-    overflow:hidden;
-    animation:resultFadeIn .5s ease both;
-  }}
-  @keyframes resultFadeIn{{from{{opacity:0;transform:translateY(14px)}}to{{opacity:1;transform:none}}}}
-  .top-row {{ display:flex; align-items:flex-start; gap:2rem; flex-wrap:wrap; }}
-  .ring-col {{ display:flex; flex-direction:column; align-items:center; flex-shrink:0; }}
-  .verdict-col {{ flex:1; min-width:220px; }}
-  .badge {{
-    display:flex; align-items:center; gap:1rem;
-    padding:.9rem 1.2rem;
-    background:rgba(255,255,255,.03);
-    border:1px solid rgba(255,255,255,.06);
-    border-left:3px solid {color};
-    border-radius:12px;
-    box-shadow:0 0 20px {glow};
-    margin-bottom:1rem;
-  }}
-  .badge-level {{ font-size:1.1rem; font-weight:800; letter-spacing:.1em; color:{color}; text-shadow:0 0 10px {color}; }}
-  .badge-status {{ font-family:monospace; font-size:.75rem; color:#5a7a9a; margin-top:2px; }}
-  .meta-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:.75rem; margin-bottom:1rem; }}
-  .meta-cell {{
-    background:rgba(255,255,255,.025);
-    border:1px solid rgba(255,255,255,.05);
-    border-radius:10px; padding:.6rem .8rem;
-  }}
-  .meta-label {{ font-family:monospace; font-size:.6rem; letter-spacing:.1em; color:#5a7a9a; text-transform:uppercase; margin-bottom:.25rem; }}
-  .meta-val {{ font-size:.85rem; font-weight:700; color:{color}; }}
-  .verdict-box {{
-    background:rgba(0,212,255,.03);
-    border:1px solid rgba(0,212,255,.08);
-    border-radius:10px; padding:.75rem 1rem;
-  }}
-  .verdict-label {{ font-size:.65rem; font-weight:700; letter-spacing:.1em; color:#00d4ff; text-transform:uppercase; margin-bottom:.4rem; }}
-  .verdict-text {{ font-size:.88rem; line-height:1.7; color:#c8d8e8; }}
-  .divider {{ height:1px; background:linear-gradient(90deg,transparent,rgba(0,212,255,.15),transparent); margin:1.25rem 0; }}
-  .section-hdr {{ font-family:'Rajdhani',sans-serif; font-size:.65rem; font-weight:700; letter-spacing:.12em; color:#00d4ff; text-transform:uppercase; margin-bottom:.6rem; }}
-  .kw-chip {{
-    display:inline-block; margin:.25rem .3rem;
-    padding:.3rem .75rem;
-    background:rgba(0,212,255,.07);
-    border:1px solid rgba(0,212,255,.2);
-    border-radius:20px;
-    font-family:monospace; font-size:.75rem; color:#00d4ff;
-  }}
-  .rec-item {{
-    display:flex; align-items:flex-start; gap:.75rem;
-    padding:.6rem .9rem; margin-bottom:.4rem;
-    background:rgba(255,255,255,.02);
-    border:1px solid rgba(255,255,255,.05);
-    border-left:2px solid {color}88;
-    border-radius:0 8px 8px 0;
-    font-size:.88rem; color:#c8d8e8; line-height:1.5;
-  }}
-  .data-row {{
-    display:flex; align-items:center; gap:.75rem;
-    padding:.5rem .75rem; margin-bottom:.3rem;
-    background:rgba(255,255,255,.02);
-    border:1px solid rgba(255,255,255,.04);
-    border-radius:8px; font-size:.82rem;
-  }}
-  .dr-label {{ color:#5a7a9a; min-width:130px; font-family:monospace; font-size:.75rem; }}
-  .dr-val {{ color:#c8d8e8; }}
-  .ring-caption {{ margin-top:.4rem; font-size:.58rem; letter-spacing:.18em; color:#5a7a9a; text-transform:uppercase; }}
-  .score-num {{ font-family:'Orbitron',monospace; font-size:1.7rem; font-weight:800; line-height:1; color:{color}; text-shadow:0 0 14px {color}; }}
-  .score-sub {{ font-family:monospace; font-size:.65rem; color:#5a7a9a; letter-spacing:.06em; margin-top:2px; }}
-</style>
-</head>
-<body>
-<div class="result-card">
-
-  <div class="top-row">
-    <!-- Neural Risk Ring -->
-    <div class="ring-col">
-      <div style="position:relative;width:130px;height:130px;">
-        <svg viewBox="0 0 130 130" width="130" height="130" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="65" cy="65" r="{radius}" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="10"/>
-          <circle cx="65" cy="65" r="{radius}" fill="none"
-            stroke="{color}" stroke-width="10" stroke-linecap="round"
-            stroke-dasharray="{dash} {gap}"
-            transform="rotate(-90 65 65)"
-            style="filter:drop-shadow(0 0 10px {color})"/>
-        </svg>
-        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;">
-          <div class="score-num">{score}</div>
-          <div class="score-sub">/ 100</div>
-        </div>
-      </div>
-      <div class="ring-caption">RISK SCORE</div>
-    </div>
-
-    <!-- Verdict + Meta -->
-    <div class="verdict-col">
-      <div class="badge">
-        <span style="font-size:1.5rem">{emoji}</span>
-        <div>
-          <div class="badge-level">{label_str} THREAT</div>
-          <div class="badge-status">{status}</div>
-        </div>
-      </div>
-
-      <div class="meta-grid">
-        <div class="meta-cell">
-          <div class="meta-label">THREAT LEVEL</div>
-          <div class="meta-val">{label_str}</div>
-        </div>
-        <div class="meta-cell">
-          <div class="meta-label">RISK %</div>
-          <div class="meta-val">{score}%</div>
-        </div>
-        <div class="meta-cell">
-          <div class="meta-label">SAFETY STATUS</div>
-          <div class="meta-val" style="color:#c8d8e8;font-weight:600;">{status_text}</div>
-        </div>
-      </div>
-
-      <div class="verdict-box">
-        <div class="verdict-label">🔍 AI Verdict</div>
-        <div class="verdict-text">{verdict_text}</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="divider"></div>
-
-  {url_details_html}
-
-  {content_analysis_html}
-
-  <div class="divider"></div>
-
-  <!-- Recommendations -->
-  <div class="section-hdr">🛡️ Recommendations</div>
-  <div style="margin-top:.25rem">{rec_html}</div>
-
-</div>
-</body>
-</html>
-""", height=_height, scrolling=True)
-
-def log_scan(result: dict, scan_type: str) -> None:
-    if "error" not in result:
-        st.session_state.stats = update_stats(
-            st.session_state.stats,
-            verdict   =result.get("risk_level", "SAFE"),
-            risk_score=result.get("risk_score", 0),
-            scan_type =scan_type,
-        )
-        # Save to user's browser localStorage — private, persistent, device-only
-        _save_to_localstorage(st.session_state.stats)
-
-# ══════════════════════════════════════════════════════════════════
-# ✚ ADD-ON FEATURE: Post-Scan Threat Popup + "Open Website" Action
-# ══════════════════════════════════════════════════════════════════
-# This is a pure enhancement layered on top of the existing URL Scanner.
-# It does NOT alter analyse_url_full(), render_full_result(), risk scoring,
-# threat levels, or any other existing UI/backend behaviour. It only adds:
-#   1. A new "Open Website" action button (didn't exist before).
-#   2. An animated cyber-themed warning popup shown after a scan completes.
-# Rendered via components.html (a real iframe, so its <script> actually runs —
-# st.markdown()/unsafe_allow_html silently ignores <script> tags, which is why
-# an earlier version of this popup never appeared). The popup markup is then
-# relocated into the parent page's own DOM so position:fixed covers the full
-# browser viewport — the same window.parent.document technique this app
-# already relies on for its custom nav bar (see NAVIGATION section below).
-def render_threat_popup(result: dict, url_val: str) -> None:
-    if not result or "error" in result:
-        return
-
-    import hashlib as _hashlib
-    import streamlit.components.v1 as components
-
-    level = result.get("risk_level", "SAFE")
-    score = result.get("risk_score", 0)
-    open_target = result.get("open_url") or (url_val or "").strip()
-
-    LEVEL_CONFIG = {
-        "SAFE": dict(
-            color="#00ff9d", glow="rgba(0,255,157,.55)", icon="✅",
-            title="ACCESS GRANTED", shake="", sound="success", blocked=False,
-            lines=["✅ This website appears safe."],
-        ),
-        "LOW": dict(
-            color="#3b82f6", glow="rgba(59,130,246,.55)", icon="🔵",
-            title="LOW RISK DETECTED", shake="", sound="success", blocked=False,
-            lines=["🔵 This link looks mostly safe.",
-                   "Still verify the source before entering any details."],
-        ),
-        "MEDIUM": dict(
-            color="#ffb340", glow="rgba(255,179,64,.6)", icon="⚠️",
-            title="CAUTION ADVISED", shake="", sound="warning", blocked=True,
-            lines=["⚠️ Think before you click.",
-                   "This link contains suspicious elements."],
-        ),
-        "HIGH": dict(
-            color="#f97316", glow="rgba(249,115,22,.65)", icon="🚨",
-            title="HIGH THREAT DETECTED", shake="cl-twp-shake-soft", sound="alert", blocked=True,
-            lines=["🚨 Multiple high-risk indicators detected.",
-                   "Proceeding is strongly discouraged."],
-        ),
-        "CRITICAL": dict(
-            color="#ff3366", glow="rgba(255,51,102,.75)", icon="🛑",
-            title="DANGER — SCAM DETECTED", shake="cl-twp-shake-hard", sound="alert", blocked=True,
-            lines=["🛑 STOP! Potential scam detected.",
-                   "Don't risk your data.",
-                   "This website has been blocked for your safety."],
-        ),
-    }
-    cfg = LEVEL_CONFIG.get(level, LEVEL_CONFIG["SAFE"])
-
-    lines_html = "".join(f'<div class="cl-twp-line">{ln}</div>' for ln in cfg["lines"])
-    blocked          = cfg["blocked"]
-    btn_label        = "BLOCKED" if blocked else "Open Website"
-    btn_class        = "cl-owb-blocked" if blocked else "cl-owb-active"
-    btn_disabled_att = "disabled aria-disabled=\"true\"" if blocked else ""
-    note_html        = ('<div class="cl-owb-note">🔒 This action has been locked by '
-                         'CyberLens AI for your protection.</div>') if blocked else ""
-
-    _uid = _hashlib.md5(f"{open_target}|{level}|{score}".encode("utf-8")).hexdigest()[:10]
-    _open_target_js = json.dumps(open_target)
-    _shake_class_js = json.dumps(cfg["shake"])
-    _blocked_js      = "true" if blocked else "false"
-
-    # NOTE ON IMPLEMENTATION: st.markdown()/unsafe_allow_html never executes
-    # <script> tags (browsers ignore scripts inserted via innerHTML — this is
-    # a web-platform rule, not a Streamlit bug). components.html() renders a
-    # real iframe document, so its <script> DOES execute. To still get a
-    # TRUE full-page overlay (not one boxed inside the iframe's small height),
-    # the script below relocates the popup markup + its stylesheet into the
-    # parent page's own DOM — the same window.parent.document technique this
-    # app already relies on for its custom nav bar further down this file.
-    components.html(f"""
-<!DOCTYPE html><html><head>
-<style>
-html,body{{margin:0;padding:0;background:transparent;font-family:'Rajdhani',sans-serif;overflow:hidden;}}
-.cl-owb-wrap {{
-    display: flex; flex-direction: column; align-items: center; gap: .5rem;
-    padding-top: 4px;
-}}
-.cl-owb-active, .cl-owb-blocked {{
-    font-family: 'Rajdhani', sans-serif; font-weight: 700; letter-spacing: .08em;
-    text-transform: uppercase; font-size: .85rem; padding: .8rem 2.2rem;
-    border-radius: 12px; display: inline-flex; align-items: center; gap: .6rem;
-    transition: all .25s ease; border: 1px solid transparent;
-}}
-.cl-owb-active {{
-    cursor: pointer;
-    background: linear-gradient(135deg, rgba(0,255,157,.18), rgba(0,212,255,.18));
-    border-color: rgba(0,255,157,.45); color: #00ff9d;
-    box-shadow: 0 0 24px rgba(0,255,157,.25);
-}}
-.cl-owb-active:hover {{ transform: translateY(-2px); box-shadow: 0 0 34px rgba(0,255,157,.45); }}
-.cl-owb-blocked {{
-    cursor: not-allowed; background: rgba(255,51,102,.08);
-    border-color: rgba(255,51,102,.45); color: #ff3366; opacity: .9;
-    animation: clOwbBlockedPulse 2.2s ease-in-out infinite;
-}}
-@keyframes clOwbBlockedPulse {{
-    0%,100% {{ box-shadow: 0 0 14px rgba(255,51,102,.2); }}
-    50%     {{ box-shadow: 0 0 26px rgba(255,51,102,.45); }}
-}}
-.cl-owb-note {{
-    font-family: monospace; font-size: .68rem; letter-spacing: .04em;
-    color: #5a7a9a; text-align: center;
-}}
-</style>
-</head>
-<body>
-
-<div class="cl-owb-wrap">
-    <button id="cl-owb-btn-{_uid}" class="{btn_class}" {btn_disabled_att} onclick="clOwbOpen_{_uid}();return false;">
-        <span>{"🔒" if blocked else "🌐"}</span><span>{btn_label}</span>
-    </button>
-    {note_html}
-</div>
-
-<!-- Popup markup — relocated into the top-level page by the script below so
-     position:fixed covers the WHOLE viewport, not just this small iframe. -->
-<div id="cl-twp-overlay-{_uid}" class="cl-twp-global-item cl-twp-overlay">
-    <div id="cl-twp-card-{_uid}" class="cl-twp-card" style="--twp-color:{cfg['color']};--twp-glow:{cfg['glow']}">
-        <div class="cl-twp-scanbar"></div>
-        <div class="cl-twp-icon">{cfg['icon']}</div>
-        <div class="cl-twp-title">{cfg['title']}</div>
-        <div class="cl-twp-msg">{lines_html}</div>
-        <button class="cl-twp-ok" type="button">✓ OK</button>
-    </div>
-</div>
-
-<style id="__cl_twp_style_src_{_uid}">
-.cl-twp-overlay {{
-    position: fixed; inset: 0; width: 100vw; height: 100vh;
-    background: rgba(2,4,9,.78);
-    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 999999; opacity: 0; pointer-events: none;
-    transition: opacity .35s ease;
-    font-family: 'Rajdhani', sans-serif;
-}}
-.cl-twp-overlay.cl-twp-show {{ opacity: 1; pointer-events: auto; }}
-.cl-twp-card {{
-    --twp-color: #00d4ff; --twp-glow: rgba(0,212,255,.5);
-    position: relative; width: min(430px, 88vw);
-    background: rgba(6,12,24,.97); border: 1px solid var(--twp-color);
-    border-radius: 22px; padding: 2.3rem 1.9rem 1.9rem; text-align: center;
-    box-shadow: 0 0 70px var(--twp-glow), inset 0 0 30px rgba(255,255,255,.02);
-    transform: scale(.82) translateY(24px); opacity: 0;
-    transition: transform .42s cubic-bezier(.2,.9,.3,1.35), opacity .3s ease;
-    overflow: hidden;
-}}
-.cl-twp-overlay.cl-twp-show .cl-twp-card {{ transform: scale(1) translateY(0); opacity: 1; }}
-.cl-twp-card::before, .cl-twp-card::after {{
-    content: ''; position: absolute; width: 22px; height: 22px; border-color: var(--twp-color);
-}}
-.cl-twp-card::before {{ top: 10px; left: 10px; border-top: 2px solid var(--twp-color); border-left: 2px solid var(--twp-color); }}
-.cl-twp-card::after  {{ bottom: 10px; right: 10px; border-bottom: 2px solid var(--twp-color); border-right: 2px solid var(--twp-color); }}
-.cl-twp-scanbar {{
-    position: absolute; top: 0; left: 0; right: 0; height: 3px;
-    background: linear-gradient(90deg, transparent, var(--twp-color), transparent);
-    animation: clTwpScan 2s linear infinite;
-}}
-@keyframes clTwpScan {{ 0%,100% {{ opacity:.25; }} 50% {{ opacity:1; }} }}
-.cl-twp-icon {{
-    font-size: 3rem; margin-bottom: .7rem;
-    filter: drop-shadow(0 0 18px var(--twp-glow));
-    animation: clTwpPulse 1.6s ease-in-out infinite;
-}}
-@keyframes clTwpPulse {{ 0%,100% {{ transform: scale(1); }} 50% {{ transform: scale(1.15); }} }}
-.cl-twp-title {{
-    font-family: 'Orbitron', monospace; font-size: 1rem; font-weight: 800;
-    letter-spacing: .14em; color: var(--twp-color);
-    text-shadow: 0 0 14px var(--twp-glow); margin-bottom: .9rem;
-}}
-.cl-twp-msg {{ margin-bottom: 1.6rem; }}
-.cl-twp-line {{ font-family: 'Inter', sans-serif; font-size: .92rem; color: #c8d8ea; line-height: 1.7; }}
-.cl-twp-ok {{
-    font-family: 'Rajdhani', sans-serif; font-weight: 800; letter-spacing: .1em;
-    text-transform: uppercase; font-size: .85rem; padding: .65rem 2.5rem;
-    border-radius: 10px; border: 1px solid var(--twp-color);
-    background: rgba(255,255,255,.04); color: var(--twp-color); cursor: pointer;
-    box-shadow: 0 0 20px var(--twp-glow); transition: all .2s ease;
-}}
-.cl-twp-ok:hover {{ background: var(--twp-color); color: #020409; box-shadow: 0 0 32px var(--twp-glow); }}
-@keyframes clTwpShakeSoft {{
-    0%,100% {{ transform: translateX(0); }} 25% {{ transform: translateX(-5px); }} 75% {{ transform: translateX(5px); }}
-}}
-.cl-twp-shake-soft {{ animation: clTwpShakeSoft .45s ease 2; }}
-@keyframes clTwpShakeHard {{
-    10%,90% {{ transform: translate3d(-2px,0,0); }} 20%,80% {{ transform: translate3d(4px,0,0); }}
-    30%,50%,70% {{ transform: translate3d(-8px,0,0); }} 40%,60% {{ transform: translate3d(8px,0,0); }}
-}}
-.cl-twp-shake-hard {{ animation: clTwpShakeHard .6s cubic-bezier(.36,.07,.19,.97) 2; }}
-</style>
-
-<script>
-(function() {{
-    try {{
-        var parentDoc = window.parent.document;
-
-        // 1) Clean up any popup(s) injected by earlier renders in this session
-        //    so they don't silently pile up in the parent page across reruns.
-        var stale = parentDoc.querySelectorAll('.cl-twp-global-item');
-        for (var i = 0; i < stale.length; i++) {{ stale[i].parentNode.removeChild(stale[i]); }}
-
-        var staleStyle = parentDoc.getElementById('cl-twp-global-style');
-        if (staleStyle) staleStyle.parentNode.removeChild(staleStyle);
-
-        // 2) Re-install the popup's stylesheet in the parent page's <head>
-        var styleSrc = document.getElementById('__cl_twp_style_src_{_uid}');
-        var styleNode = parentDoc.createElement('style');
-        styleNode.id = 'cl-twp-global-style';
-        styleNode.textContent = styleSrc ? styleSrc.textContent : '';
-        parentDoc.head.appendChild(styleNode);
-
-        // 3) Move the overlay node itself into the parent page's <body>
-        //    so position:fixed covers the full browser viewport.
-        var overlay = document.getElementById('cl-twp-overlay-{_uid}');
-        parentDoc.body.appendChild(overlay);
-
-        var card  = overlay.querySelector('.cl-twp-card');
-        var okBtn = overlay.querySelector('.cl-twp-ok');
-        if (okBtn) {{
-            okBtn.onclick = function() {{ overlay.classList.remove('cl-twp-show'); }};
-        }}
-
-        // 4) Local "Open Website" button (stays inside this small iframe)
-        //    calls this to either open the link or show/shake the relocated popup.
-        window.clOwbOpen_{_uid} = function() {{
-            if ({_blocked_js}) {{
-                overlay.classList.add('cl-twp-show');
-                if (card) {{
-                    card.classList.remove('cl-twp-shake-soft', 'cl-twp-shake-hard');
-                    void card.offsetWidth;
-                    var sc = {_shake_class_js};
-                    if (sc) card.classList.add(sc);
-                }}
-                return;
-            }}
-            window.open({_open_target_js}, '_blank', 'noopener,noreferrer');
-        }};
-
-        // 5) Lightweight synthesized sound cues (Web Audio API — no audio files).
-        function clPlaySound(kind) {{
-            try {{
-                var Ctx = window.parent.AudioContext || window.parent.webkitAudioContext;
-                var ctx = new Ctx();
-                function tone(freq, start, dur, type, vol) {{
-                    var o = ctx.createOscillator();
-                    var g = ctx.createGain();
-                    o.type = type || 'sine';
-                    o.frequency.setValueAtTime(freq, ctx.currentTime + start);
-                    g.gain.setValueAtTime(0, ctx.currentTime + start);
-                    g.gain.linearRampToValueAtTime(vol || 0.15, ctx.currentTime + start + 0.02);
-                    g.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
-                    o.connect(g); g.connect(ctx.destination);
-                    o.start(ctx.currentTime + start);
-                    o.stop(ctx.currentTime + start + dur + 0.02);
-                }}
-                if (kind === 'success') {{
-                    tone(660, 0, 0.12, 'sine', 0.12); tone(880, 0.12, 0.18, 'sine', 0.14);
-                }} else if (kind === 'warning') {{
-                    tone(720, 0, 0.10, 'square', 0.10); tone(480, 0.14, 0.12, 'square', 0.10);
-                    tone(720, 0.30, 0.10, 'square', 0.10); tone(480, 0.44, 0.12, 'square', 0.10);
-                }} else if (kind === 'alert') {{
-                    tone(900, 0, 0.15, 'sawtooth', 0.13); tone(500, 0.16, 0.15, 'sawtooth', 0.13);
-                    tone(900, 0.34, 0.15, 'sawtooth', 0.13); tone(500, 0.50, 0.18, 'sawtooth', 0.13);
-                }}
-            }} catch (e) {{}}
-        }}
-
-        // 6) Auto-show once per distinct scan result (dedup via the parent
-        //    page's own sessionStorage so switching tabs doesn't re-trigger it).
-        var thisKey = 'cl_twp_{_uid}';
-        var lastKey = null;
-        try {{ lastKey = window.parent.sessionStorage.getItem('cl_twp_last_shown'); }} catch (e) {{}}
-        if (lastKey !== thisKey) {{
-            try {{ window.parent.sessionStorage.setItem('cl_twp_last_shown', thisKey); }} catch (e) {{}}
-            setTimeout(function() {{
-                overlay.classList.add('cl-twp-show');
-                clPlaySound('{cfg["sound"]}');
-            }}, 300);
-        }}
-    }} catch (e) {{
-        // If the browser ever blocks parent-document access, fail silently —
-        // the existing scan results / risk scoring are completely unaffected.
-    }}
-}})();
-</script>
-</body></html>
-""", height=150)
-
-# ══════════════════════════════════════════════════════════════════
-# NAVIGATION
-# ══════════════════════════════════════════════════════════════════
-NAV_ICONS = {
-    "Dashboard":        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="20" height="20"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
-    "Analyzer":         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="20" height="20"><circle cx="11" cy="11" r="7"/><path d="M11 8v3l2 2"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>',
-    "URL Scanner":      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="20" height="20"><circle cx="12" cy="12" r="9"/><path d="M12 3c-2.5 4-2.5 14 0 18M12 3c2.5 4 2.5 14 0 18M3 12h18"/></svg>',
-    "QR Scanner":       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="20" height="20"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="17" width="1.5" height="4"/><rect x="18.5" y="14" width="1.5" height="4"/><rect x="14" y="14" width="4" height="1.5"/></svg>',
-    "Company Verifier": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="20" height="20"><rect x="3" y="7" width="18" height="14" rx="1.5"/><path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>',
-    "Analytics":        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="20" height="20"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>',
-    "About":            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" width="20" height="20"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="8.5" stroke-linecap="round" stroke-width="2"/><line x1="12" y1="11" x2="12" y2="16"/></svg>',
-}
-NAV_ITEMS = [
-    ("Dashboard",       "Dashboard"),
-    ("Analyzer",        "AI Analyzer"),
-    ("URL Scanner",     "URL Scanner"),
-    ("QR Scanner",      "QR Scanner"),
-    ("Company Verifier","Company Verify"),
-    ("Analytics",       "Analytics"),
-    ("About",           "About"),
-]
-
-# ── Top Bar + Nav rendered via components.html (avoids Streamlit HTML stripping) ──
-import streamlit.components.v1 as components
-
-cur = st.session_state.current_page
-_total_scans = st.session_state.stats.get("total_scans", 0)
-_threats     = st.session_state.stats.get("threats_found", 0)
-
-# Build nav items HTML
-_nav_items_html = ""
-for key, label in NAV_ITEMS:
-    active_cls = "cl-nav-active" if cur == key else ""
-    icon_svg   = NAV_ICONS.get(key, "")
-    _nav_items_html += f'''<div class="cl-nav-item {active_cls}" onclick="navClick(this,'{label}')">
-        <div class="cl-nav-icon">{icon_svg}</div>
-        <div class="cl-nav-label">{label}</div>
-    </div>'''
-
-components.html(f"""
-<!DOCTYPE html><html><head>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:#020409;font-family:'Rajdhani',sans-serif;overflow:hidden}}
-:root{{--primary:#00d4ff;--success:#00ff9d;--danger:#ff3366;--text-dim:#5a7a9a;--text:#c8d8ea}}
-
-/* ── Topbar ── */
-.cl-topbar{{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:0 2rem;height:62px;
-  background:rgba(2,4,9,0.96);
-  border-bottom:1px solid rgba(0,212,255,0.12);
-  overflow:hidden;position:relative;
-}}
-.cl-topbar::before{{
-  content:'';position:absolute;top:0;left:-100%;width:60%;height:100%;
-  background:linear-gradient(105deg,transparent 40%,rgba(0,212,255,0.04) 50%,rgba(124,58,237,0.04) 55%,transparent 65%);
-  animation:topbarShimmer 8s linear infinite;pointer-events:none;
-}}
-@keyframes topbarShimmer{{0%{{left:-60%}}100%{{left:160%}}}}
-.cl-topbar::after{{
-  content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(0,212,255,0.4) 20%,rgba(124,58,237,0.5) 50%,rgba(0,212,255,0.4) 80%,transparent);
-  animation:topbarLine 4s ease-in-out infinite alternate;
-}}
-@keyframes topbarLine{{0%{{opacity:0.5}}100%{{opacity:1}}}}
-
-.cl-brand{{display:flex;align-items:center;gap:12px;position:relative;z-index:1}}
-.cl-brand-icon{{
-  width:38px;height:38px;border-radius:10px;
-  background:linear-gradient(135deg,rgba(0,212,255,0.2),rgba(124,58,237,0.2));
-  border:1px solid rgba(0,212,255,0.4);
-  display:flex;align-items:center;justify-content:center;font-size:1.15rem;
-  box-shadow:0 0 18px rgba(0,212,255,0.25),inset 0 0 12px rgba(0,212,255,0.05);
-  animation:iconPulse 3s ease-in-out infinite;
-}}
-@keyframes iconPulse{{
-  0%,100%{{box-shadow:0 0 18px rgba(0,212,255,0.25),inset 0 0 12px rgba(0,212,255,0.05)}}
-  50%{{box-shadow:0 0 28px rgba(0,212,255,0.45),inset 0 0 16px rgba(0,212,255,0.10)}}
-}}
-.cl-brand-name{{font-family:'Orbitron',monospace;font-size:1rem;font-weight:700;color:#e8f4ff;letter-spacing:0.08em}}
-.cl-brand-name span{{color:#00d4ff;text-shadow:0 0 14px #00d4ff}}
-
-.cl-ticker-wrap{{flex:1;margin:0 2rem;overflow:hidden;height:100%;display:flex;align-items:center;position:relative;z-index:1}}
-.cl-ticker{{
-  display:flex;gap:3rem;
-  animation:tickerScroll 30s linear infinite;
-  white-space:nowrap;font-family:'JetBrains Mono',monospace;
-  font-size:0.65rem;letter-spacing:0.06em;color:#5a7a9a;
-}}
-.cl-ticker span{{display:inline-block}}
-.t-warn{{color:#ffb340}}.t-danger{{color:#ff3366}}.t-safe{{color:#00ff9d}}
-.t-sep{{color:rgba(0,212,255,0.3);margin:0 0.5rem}}
-@keyframes tickerScroll{{0%{{transform:translateX(0)}}100%{{transform:translateX(-50%)}}}}
-
-.cl-status{{
-  display:flex;align-items:center;gap:8px;
-  background:rgba(0,255,157,0.07);border:1px solid rgba(0,255,157,0.25);
-  border-radius:20px;padding:.3rem 1rem;
-  font-size:.72rem;font-family:'JetBrains Mono',monospace;
-  color:#00ff9d;font-weight:500;letter-spacing:.06em;
-  position:relative;z-index:1;white-space:nowrap;
-}}
-.cl-status-dot{{
-  width:7px;height:7px;border-radius:50%;
-  background:#00ff9d;box-shadow:0 0 10px #00ff9d;
-  animation:clPulse 2s infinite;
-}}
-@keyframes clPulse{{0%,100%{{opacity:1;transform:scale(1)}}50%{{opacity:.4;transform:scale(.8)}}}}
-
-/* ── Nav ── */
-.cl-nav-row{{
-  display:flex;gap:4px;padding:.55rem .5rem 0;
-  background:rgba(3,8,20,0.85);
-  border-bottom:1px solid rgba(0,212,255,0.08);
-}}
-.cl-nav-item{{
-  flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;
-  padding:9px 4px 11px;border-radius:10px 10px 0 0;cursor:pointer;
-  color:#5a7a9a;transition:all .2s ease;background:transparent;
-  border:1px solid transparent;border-bottom:none;user-select:none;position:relative;
-}}
-.cl-nav-item:hover{{color:#00d4ff;background:rgba(0,212,255,0.05);border-color:rgba(0,212,255,0.18)}}
-.cl-nav-item:hover svg{{filter:drop-shadow(0 0 5px rgba(0,212,255,.5))}}
-.cl-nav-active{{color:#00d4ff!important;background:rgba(0,212,255,0.08)!important;border-color:rgba(0,212,255,0.28)!important;box-shadow:0 -2px 16px rgba(0,212,255,.1) inset!important}}
-.cl-nav-active svg{{filter:drop-shadow(0 0 6px rgba(0,212,255,.6))!important}}
-.cl-nav-active::after{{
-  content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);
-  width:50%;height:2px;background:#00d4ff;border-radius:2px 2px 0 0;
-  box-shadow:0 0 10px #00d4ff;
-}}
-.cl-nav-icon{{line-height:1;display:flex;align-items:center;justify-content:center}}
-.cl-nav-label{{font-family:'Rajdhani',sans-serif;font-size:.6rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}}
-
-/* ── MOBILE ONLY: swipe nav ── */
-@media(max-width:768px){{
-  .cl-nav-row{{
-    overflow-x:auto !important;
-    overflow-y:visible !important;
-    -webkit-overflow-scrolling:touch !important;
-    scrollbar-width:none !important;
-    flex-wrap:nowrap !important;
-  }}
-  .cl-nav-row::-webkit-scrollbar{{display:none}}
-  .cl-nav-item{{
-    flex:0 0 auto !important;
-    min-width:68px !important;
-  }}
-  .cl-ticker-wrap{{display:none !important}}
-  .cl-topbar{{padding:0 0.75rem !important;height:52px !important}}
-  .cl-brand-name{{font-size:0.82rem !important}}
-  .cl-brand-icon{{width:30px !important;height:30px !important;font-size:0.9rem !important}}
-  .cl-status{{font-size:0.6rem !important;padding:0.2rem 0.6rem !important}}
-}}
-</style>
-</head>
-<body>
-
-<div class="cl-topbar">
-  <div class="cl-brand">
-    <div class="cl-brand-icon">🛡️</div>
-    <div class="cl-brand-name">CyberLens <span>AI</span></div>
-  </div>
-  <div class="cl-ticker-wrap">
-    <div class="cl-ticker">
-      <span>⚡ AI Threat Engine <span class="t-safe">ACTIVE</span></span>
-      <span class="t-sep">//</span>
-      <span>📊 Session Scans: <span class="t-safe">{_total_scans}</span></span>
-      <span class="t-sep">//</span>
-      <span>⚠️ Threats Detected: <span class="t-warn">{_threats}</span></span>
-      <span class="t-sep">//</span>
-      <span>⚡ AI Threat Engine <span class="t-safe">ACTIVE</span></span>
-      <span class="t-sep">//</span>
-      <span>📊 Session Scans: <span class="t-safe">{_total_scans}</span></span>
-      <span class="t-sep">//</span>
-      <span>⚠️ Threats Detected: <span class="t-warn">{_threats}</span></span>
-      <span class="t-sep">//</span>
-    </div>
-  </div>
-  <div style="display:flex;align-items:center;gap:.6rem">
-    <div class="cl-status"><div class="cl-status-dot"></div>SYSTEMS ONLINE</div>
-  </div>
-</div>
-
-<div class="cl-nav-row">
-  {_nav_items_html}
-</div>
-
-<script>
-var _navLock=false;
-function navClick(el,label){{
-  if(_navLock)return;
-  _navLock=true;
-  document.querySelectorAll('.cl-nav-item').forEach(function(n){{n.classList.remove('cl-nav-active')}});
-  el.classList.add('cl-nav-active');
-  try{{
-    var btns=window.parent.document.querySelectorAll('button');
-    for(var i=0;i<btns.length;i++){{
-      if(btns[i].innerText.trim()===label){{btns[i].click();break;}}
-    }}
-  }}catch(e){{}}
-  setTimeout(function(){{_navLock=false;}},800);
-}}
-</script>
-</body></html>
-""", height=130, scrolling=False)
-
-# Hidden nav buttons — zero-height container so they don't appear visually
-# but remain in the DOM so the JS onclick in components.html can trigger them
-with st.container():
-    H('''<style>
-    div[data-testid="stHorizontalBlock"]:has(button[kind="secondary"]) {
-        height: 0 !important;
-        min-height: 0 !important;
-        overflow: hidden !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        gap: 0 !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-        position: absolute !important;
-    }
-    </style>''')
-    nav_cols = st.columns(len(NAV_ITEMS))
-    for i, (key, label) in enumerate(NAV_ITEMS):
-        with nav_cols[i]:
-            if st.button(label, key=f"nav_{i}", use_container_width=True):
-                st.session_state.current_page = key
-                for _k in ("result_text","result_ocr","result_pdf","result_url","result_qr","result_co"):
-                    st.session_state[_k] = None
-                st.rerun()
-
-H('<div class="cl-navdivider"></div>')
-selected = st.session_state.current_page
-
-# ══════════════════════════════════════════════════════════════════
-# PAGE: DASHBOARD
-# ══════════════════════════════════════════════════════════════════
-if selected == "Dashboard":
-
-    _live_threats = st.session_state.stats.get("threats_found", 0)
-    H(f'''
-    <div class="page-enter" style="text-align:center;padding:2.5rem 0 1.5rem">
-        <div class="radar-container">
-            <div class="radar-ring"></div>
-            <div class="radar-ring"></div>
-            <div class="radar-ring"></div>
-            <div class="radar-crosshair"></div>
-            <div class="radar-sweep"></div>
-            <div class="radar-center">🛡️</div>
-        </div>
-        <div class="cyber-title" style="margin-bottom:0.5rem">CyberLens AI</div>
-        <div class="cyber-subtitle" style="margin-bottom:1.25rem">
-             Multimodal AI Platform for Real-Time Cyber Scam Detection
-        </div>
-        <div style="display:flex;align-items:center;justify-content:center;gap:0.5rem;flex-wrap:wrap">
-            <span class="badge-active">● Intelligence Engine Active</span>
-            <span class="live-counter">
-                <span class="live-dot"></span>
-                {_live_threats} THREAT{"S" if _live_threats != 1 else ""} DETECTED
-            </span>
-        </div>
-    </div>
-    ''')
-
-    H('<div class="cyber-divider"></div>')
-
-    # ── 4 Stat Cards ─────────────────────────────────────────────
-    stats   = st.session_state.stats
-    s_total = stats["total_scans"]
-    s_threat= stats["threats_found"]
-    s_safe  = stats["safe_scans"]
-    s_crit  = stats["critical"]
-
-    cols = st.columns(4)
-    stat_data = [
-        ("🔍", str(s_total),  "Total Scans",      "#00d4ff"),
-        ("⚠️", str(s_threat), "Threats Detected",  "#ffb340"),
-        ("✅", str(s_safe),   "Safe Scans",        "#00ff9d"),
-        ("🔴", str(s_crit),   "Critical Threats",  "#ff3366"),
-    ]
-    for col, (icon, val, lbl, color) in zip(cols, stat_data):
-        with col:
-            H(f'''
-            <div class="stat-card">
-                <div style="font-size:1.6rem">{icon}</div>
-                <div class="stat-value" style="background:linear-gradient(135deg,{color},{color}88);
-                     -webkit-background-clip:text">{val}</div>
-                <div class="stat-label">{lbl}</div>
-            </div>''')
-
-    st.write("")
-    H('<div class="cyber-divider"></div>')
-
-    # ── Quick Actions ─────────────────────────────────────────────
-    H('''<div style="text-align:center;margin-bottom:1.5rem">
-        <div style="font-family:var(--font-display);font-size:0.65rem;letter-spacing:0.2em;
-                    color:var(--text-dim);text-transform:uppercase">Quick AI Actions</div>
-    </div>''')
-
-    import streamlit.components.v1 as components
-    components.html("""
-<!DOCTYPE html><html><head>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800&display=swap" rel="stylesheet">
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:transparent;}
-.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;padding:0 2px}
-.card{
-  background:rgba(8,18,38,0.85);
-  border:1px solid rgba(0,212,255,0.12);
-  border-radius:16px;
-  width:100%;padding:1.4rem 1rem;
-  display:flex;flex-direction:column;
-  align-items:center;justify-content:center;
-  gap:10px;cursor:pointer;
-  transition:all 0.25s ease;
-  position:relative;overflow:hidden;
-}
-.card::before{
-  content:'';position:absolute;
-  top:7px;left:7px;width:12px;height:12px;
-  border-top:2px solid rgba(0,212,255,0.4);
-  border-left:2px solid rgba(0,212,255,0.4);
-  border-radius:2px 0 0 0;
-}
-.card:hover{
-  border-color:rgba(0,212,255,0.45);
-  background:rgba(0,212,255,0.06);
-  box-shadow:0 0 30px rgba(0,212,255,0.12);
-  transform:translateY(-3px);
-}
-.card-emoji{font-size:1.6rem;line-height:1;font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif}
-.card-name{
-  font-family:'Orbitron',monospace;
-  font-size:0.55rem;font-weight:700;
-  letter-spacing:0.12em;text-transform:uppercase;
-  color:#00d4ff;text-align:center;
-  text-shadow:0 0 10px rgba(0,212,255,0.4);
-  line-height:1.5;padding:0 6px;
-}
-</style>
-</head><body>
-<div class="grid">
-  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='AI Analyzer')b.click()})">
-    <div class="card-emoji">&#x1F52C;</div><div class="card-name">AI ANALYZER</div>
-  </div>
-  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='URL Scanner')b.click()})">
-    <div class="card-emoji">&#x1F310;</div><div class="card-name">URL SCANNER</div>
-  </div>
-  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='QR Scanner')b.click()})">
-    <div class="card-emoji">&#x1F4F7;</div><div class="card-name">QR SCANNER</div>
-  </div>
-  <div class="card" onclick="window.parent.document.querySelectorAll('button').forEach(b=>{if(b.innerText.trim()==='Company Verify')b.click()})">
-    <div class="card-emoji">&#x1F3E2;</div><div class="card-name">COMPANY VERIFIER</div>
-  </div>
-</div>
-</body></html>
-""", height=130)
-
-    st.write("")
-    H('<div class="cyber-divider"></div>')
-
-    H('''<div style="display:flex;align-items:center;gap:0.75rem;margin:1.5rem 0 0.75rem">
-        <div class="section-header" style="margin:0">🕘 Recent Threat History</div>
-        <span style="font-family:var(--font-mono);font-size:0.6rem;letter-spacing:0.1em;
-                     color:var(--success);background:rgba(0,255,157,0.08);
-                     border:1px solid rgba(0,255,157,0.2);border-radius:10px;padding:0.15rem 0.6rem">
-            LIVE FEED
-        </span>
-    </div>''')
-
-    history = st.session_state.stats.get("scan_history", [])
-    if history:
-        for item in reversed(history[-8:]):
-            level = item.get("level", "SAFE")
-            stype = item.get("type",  "—")
-            score = item.get("score", 0)
-            ts    = item.get("ts",    "—")
-            verdicts = {
-                "SAFE":     "No threat detected",
-                "LOW":      "Low-risk content found",
-                "MEDIUM":   "Suspicious activity flagged",
-                "HIGH":     "High-risk threat detected",
-                "CRITICAL": "Critical threat — action required",
-            }
-            title_str = verdicts.get(level, "Scan complete")
-            H(f'''
-            <div class="threat-feed-item {level}">
-                <span class="feed-level-badge badge-{level}">{level}</span>
-                <span class="feed-title">{title_str}</span>
-                <span class="feed-type">{stype}</span>
-                <span style="font-family:var(--font-mono);font-size:0.72rem;
-                             color:var(--text-dim);margin-left:auto">{score}/100 · {ts}</span>
-            </div>''')
-    else:
-        H('''
-        <div style="text-align:center;padding:2.5rem;color:var(--text-dim);
-                    font-family:var(--font-mono);font-size:0.82rem;
-                    border:1px dashed rgba(0,212,255,0.12);border-radius:12px">
-            No scans yet. Run your first analysis above.
-        </div>''')
-
-
-# ══════════════════════════════════════════════════════════════════
-# PAGE: ANALYZER
-# ══════════════════════════════════════════════════════════════════
-elif selected == "Analyzer":
-
-    H('''<div class="page-enter">
-        <div class="cyber-title" style="font-size:1.9rem;margin-bottom:0.3rem">🔬 AI Threat Analyzer</div>
-        <div class="cyber-subtitle typing-cursor" style="margin-bottom:1rem" id="analyzer-sub">
-            Analyse text · images (OCR) · PDF documents
-        </div>
-    </div>''')
-    H('<div class="cyber-divider"></div>')
-
-    tab_text, tab_image, tab_pdf = st.tabs(["📝  Text / Message", "🖼️  Image (OCR)", "📄  PDF Document"])
-
-    with tab_text:
-        st.write("")
-        section_header("Quick Examples", "⚡")
-
-        # ── Multilingual example tabs ────────────────────────────────────────
-        EXAMPLES = {
-            "Fake Internship (EN)":  "Urgent! You have been selected for a premium internship. Earn Rs 30,000/month from home. Pay Rs 1500 registration fee immediately via UPI. Limited seats.",
-            "Phishing Email (EN)":   "Dear user, your account has been suspended due to suspicious activity. Click here to verify your account and enter your password and bank details within 24 hours.",
-            "Scam Job (EN)":         "Work from home data entry job. Earn $500/day guaranteed. No experience needed. Pay $100 security deposit via Bitcoin to start immediately.",
-            "போலி வேலை (Tamil)":     "அவசரம்! உங்களுக்கு ஒரு சிறப்பு இன்டர்ன்ஷிப் வழங்கப்பட்டுள்ளது. மாதம் ரூ 30,000 வீட்டிலிருந்தே சம்பாதியுங்கள். உடனடியாக ரூ 1500 பதிவு கட்டணம் செலுத்துங்கள்.",
-            "नकली नौकरी (Hindi)":   "अर्जेंट! आपको एक प्रीमियम इंटर्नशिप के लिए चुना गया है। घर से काम करें और महीने में ₹30,000 कमाएं। तुरंत ₹1500 रजिस्ट्रेशन फीस UPI से भेजें।",
-            "Trabajo Falso (ES)":    "¡Urgente! Ha sido seleccionado para una pasantía premium. Gane $500 por día desde casa. No necesita experiencia. Pague $100 de depósito de seguridad vía Bitcoin.",
-            "నకిలీ ఉద్యోగం (Telugu)": "అర్జెంట్! మీకు ప్రీమియం ఇంటర్న్‌షిప్ కోసం ఎంపిక చేయబడ్డారు. నెలకు ₹30,000 ఇంటి నుండి సంపాదించండి. వెంటనే ₹1500 రిజిస్ట్రేషన్ ఫీజు చెల్లించండి.",
-            "ವಂಚನೆ ಕೆಲಸ (Kannada)": "ತುರ್ತು! ನೀವು ಪ್ರೀಮಿಯಂ ಇಂಟರ್ನ್‌ಶಿಪ್‌ಗಾಗಿ ಆಯ್ಕೆಯಾಗಿದ್ದೀರಿ. ಮನೆಯಿಂದ ₹30,000 ತಿಂಗಳಿಗೆ ಸಂಪಾದಿಸಿ. ತಕ್ಷಣ ₹1500 ನೋಂದಣಿ ಶುಲ್ಕ ಪಾವತಿಸಿ.",
-            "വ്യാജ ജോലി (Malayalam)": "അടിയന്തരം! നിങ്ങൾ ഒരു പ്രീമിയം ഇന്റേൺഷിപ്പിനായി തിരഞ്ഞെടുക്കപ്പെട്ടു. വീട്ടിൽ നിന്ന് ₹30,000 പ്രതിമാസം നേടൂ. ഉടൻ ₹1500 രജിസ്ട്രേഷൻ ഫീ അടക്കുക.",
-        }
-
-        # ── Language support banner ──────────────────────────────────────────
-        lang_list = " · ".join(
-            f'{v["flag"]} {v["name"]}' for v in SUPPORTED_LANGUAGES.values()
-        )
-        H(f'''<div style="
-            background:rgba(124,58,237,0.07);
-            border:1px solid rgba(124,58,237,0.25);
-            border-radius:10px;padding:0.6rem 1rem;
-            font-family:var(--font-mono);font-size:0.72rem;
-            color:#a78bfa;margin-bottom:0.75rem;
-            display:flex;align-items:center;gap:0.6rem">
-            <span style="font-size:1rem">🌐</span>
-            <span><strong style="letter-spacing:0.06em">MULTILINGUAL AI</strong>
-            &nbsp;·&nbsp; Auto-detects &amp; translates:
-            <span style="color:#7c3aed;opacity:0.85">{lang_list}</span></span>
-        </div>''')
-
-        # Row 1: English examples
-        ecols = st.columns(3)
-        eng_examples = [(k, v) for k, v in EXAMPLES.items() if '(EN)' in k]
-        for i, (label, txt) in enumerate(eng_examples):
-            with ecols[i]:
-                if st.button(label, key=f"ex_{i}", use_container_width=True):
-                    st.session_state["analyzer_text"] = txt
-
-        # Row 2: Multilingual examples
-        H('<div style="margin-top:0.5rem"></div>')
-        lang_examples = [(k, v) for k, v in EXAMPLES.items() if '(EN)' not in k]
-        mcols = st.columns(len(lang_examples))
-        for i, (label, txt) in enumerate(lang_examples):
-            with mcols[i]:
-                if st.button(label, key=f"mex_{i}", use_container_width=True):
-                    st.session_state["analyzer_text"] = txt
-
-        st.write("")
-        text_input = st.text_area(
-            "Paste suspicious content here",
-            value      =st.session_state.get("analyzer_text", ""),
-            height     =160,
-            placeholder="Paste a suspicious job offer, recruiter message, email, or any text to analyse — in any supported language...",
-            key        ="analyzer_ta",
-            label_visibility="collapsed",
-        )
-        H(f'<div style="text-align:right;font-size:0.75rem;color:var(--text-dim);'
-          f'font-family:var(--font-mono);margin-top:4px">{len(text_input)} chars</div>')
-
-        st.write("")
-        H('<div class="cta-btn">')
-        analyse_clicked = st.button("⚡ Analyze Threat", use_container_width=True, key="analyze_btn")
-        H("</div>")
-
-        if analyse_clicked:
-            if not text_input.strip():
-                H('<div class="alert-warning">⚠️ Please enter some text to analyse.</div>')
-            else:
-                steps = [
-                    "🌐 Detecting language...",
-                    "🔄 Translating to English (if needed)...",
-                    "🧠 Running NLP analysis...",
-                    "🕵️ Detecting threat patterns...",
-                    "📊 Calculating risk score...",
-                    "📋 Generating intelligence report...",
-                ]
-                pb = st.progress(0); ph = st.empty()
-                for i, step in enumerate(steps):
-                    ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
-                                f'font-size:0.82rem">{step}</div>', unsafe_allow_html=True)
-                    pb.progress((i + 1) / len(steps)); time.sleep(0)
-                ph.empty(); pb.empty()
-
-                # Combined pipeline: always run Text Analysis; if the pasted
-                # text contains one or more URLs, also run the FULL URL
-                # Analysis pipeline on each one (website content extraction,
-                # threat score, scam explanation, suspicious indicators,
-                # extracted website text) -- automatically, no module switch.
-                combined = analyse_text_full(text_input)
-                result   = combined["text_result"]
-                log_scan(result, "AI Analyzer")
-
-                # ── Language detection badge (safe HTML only) ────────────────
-                if result.get('lang_code') and result['lang_code'] not in ('unknown', 'en'):
-                    badge_html = language_badge_html({
-                        'flag':               result.get('lang_flag', '🏳️'),
-                        'lang_name':          result.get('lang_name', ''),
-                        'native_name':        result.get('lang_native', ''),
-                        'confidence':         result.get('lang_confidence', 0),
-                        'was_translated':     result.get('was_translated', False),
-                        'translation_method': result.get('translation_method', ''),
-                        'translation_success':result.get('translation_success', False),
-                        'translation_error':  result.get('translation_error'),
-                    })
-                    H(badge_html)
-
-                    # ── English translation — shown directly in the results,   ──
-                    # not tucked away, so the user always sees what was analysed.
-                    if result.get('translation_success') and result.get('translated_text'):
-                        H(f'''
-                        <div style="
-                            background:rgba(0,255,157,0.06);
-                            border:1px solid rgba(0,255,157,0.25);
-                            border-radius:12px;padding:0.75rem 1rem;
-                            margin-bottom:0.75rem;">
-                            <div style="font-family:monospace;font-size:0.75rem;
-                                        color:#00ff9d;letter-spacing:0.03em;margin-bottom:0.35rem">
-                                🔤 ENGLISH TRANSLATION
-                            </div>
-                            <div style="font-size:0.9rem;color:#e5f5ef;line-height:1.5">
-                                {result['translated_text']}
-                            </div>
-                        </div>''')
-                    elif result.get('lang_code') != 'en' and not result.get('translation_success'):
-                        H('<div class="alert-warning" style="margin-bottom:0.75rem">'
-                          '⚠️ Translation unavailable — the original-language text was analysed instead.</div>')
-
-                    # Original text in a native Streamlit expander (no HTML needed)
-                    if result.get('original_text') and result['original_text'] != result.get('translated_text'):
-                        with st.expander(f"📄 Original {result.get('lang_name', '')} text"):
-                            st.text(result['original_text'])
-
-                elif result.get('lang_code') == 'en':
-                    H(language_badge_html({
-                        'flag': '🇬🇧', 'lang_name': 'English', 'native_name': 'English',
-                        'confidence': result.get('lang_confidence', 0.9),
-                        'was_translated': False, 'translation_method': '',
-                        'translation_success': False,
-                    }))
-
-                if combined["has_urls"]:
-                    section_header(
-                        f"📝 Text Analysis ({len(combined['urls_found'])} link"
-                        f"{'s' if len(combined['urls_found']) != 1 else ''} detected below)",
-                        "📝",
-                    )
-                render_full_result(result)
-
-                # ── Auto-triggered URL Analysis for every link found in the text ──
-                for url_res in combined["url_results"]:
-                    st.write("")
-                    H('<div class="cyber-divider"></div>')
-                    section_header(f"🔗 URL Analysis — {url_res.get('url')}", "🌐")
-                    log_scan(url_res, "URL Scanner (auto, from Text)")
-                    render_full_result(url_res)
-
-    with tab_image:
-        st.write("")
-        uploaded_img = st.file_uploader(
-            "Upload Image for OCR",
-            type=["png","jpg","jpeg","bmp","tiff"],
-            label_visibility="collapsed",
-            key="ocr_uploader",
-        )
-        if uploaded_img:
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                st.image(uploaded_img, caption="Uploaded Image", use_container_width=True)
-            with col2:
-                pb = st.progress(0); ph = st.empty()
-                for i, msg in enumerate(["🔍 Loading image…", "🔠 Running OCR…", "🧠 Analysing content…"]):
-                    ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
-                                f'font-size:0.82rem">{msg}</div>', unsafe_allow_html=True)
-                    pb.progress((i + 1) / 3); time.sleep(0)
-                ph.empty(); pb.empty()
-                try:
-                    result = analyse_ocr_image(uploaded_img.read())
-                except Exception as _ocr_err:
-                    err_msg = str(_ocr_err)
-                    if "tesseract" in err_msg.lower() or "TesseractNotFound" in err_msg:
-                        result = {"error": "⚠️ Tesseract-OCR is not installed or not found in PATH. "
-                                           "To fix this, install it on your server: "
-                                           "<code>sudo apt-get install tesseract-ocr</code> "
-                                           "then restart Streamlit."}
-                    else:
-                        result = {"error": f"⚠️ OCR failed: {err_msg}"}
-                if "extracted_text" in result:
-                    section_header("Extracted Text", "📄")
-                    H(f'<div class="text-preview">{result["extracted_text"][:600]}</div>')
-                    H(f'<div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;font-family:var(--font-mono)">'
-                      f'{result["word_count"]} words · {result["char_count"]} chars</div>')
-            log_scan(result, "OCR Scanner")
-            st.write("")
-            render_full_result(result)
-
-    with tab_pdf:
-        st.write("")
-        uploaded_pdf = st.file_uploader(
-            "Upload PDF Document",
-            type=["pdf"],
-            label_visibility="collapsed",
-            key="pdf_uploader",
-        )
-        if uploaded_pdf:
-            section_header("Document Info", "📋")
-            info_cols = st.columns(3)
-            with info_cols[0]:
-                H(f'<div class="stat-card"><div style="font-size:1.4rem">📄</div>'
-                  f'<div class="stat-value" style="font-size:1rem;background:linear-gradient(135deg,#00d4ff,#7c3aed);-webkit-background-clip:text">{uploaded_pdf.name[:24]}</div>'
-                  f'<div class="stat-label">Filename</div></div>')
-            with info_cols[1]:
-                H(f'<div class="stat-card"><div style="font-size:1.4rem">💾</div>'
-                  f'<div class="stat-value" style="font-size:1.3rem;background:linear-gradient(135deg,#00d4ff,#7c3aed);-webkit-background-clip:text">{round(uploaded_pdf.size/1024,1)} KB</div>'
-                  f'<div class="stat-label">File Size</div></div>')
-
-            pb = st.progress(0); ph = st.empty()
-            raw = uploaded_pdf.read()
-            for i, msg in enumerate(["📂 Reading PDF…", "📃 Extracting pages…", "🧠 Analysing content…"]):
-                ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);font-size:0.82rem">{msg}</div>', unsafe_allow_html=True)
-                pb.progress((i + 1) / 3); time.sleep(0)
-            ph.empty(); pb.empty()
-
-            result = analyse_pdf(raw)
-            if "page_count" in result:
-                with info_cols[2]:
-                    H(f'<div class="stat-card"><div style="font-size:1.4rem">📑</div>'
-                      f'<div class="stat-value" style="font-size:1.3rem;background:linear-gradient(135deg,#00d4ff,#7c3aed);-webkit-background-clip:text">{result["page_count"]}</div>'
-                      f'<div class="stat-label">Pages</div></div>')
-            if "preview_text" in result:
-                st.write("")
-                section_header("Document Preview", "👁️")
-                _safe_preview = _html.escape(result["preview_text"])
-                H(f'<div class="text-preview">{_safe_preview}</div>')
-                H(f'<div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;font-family:var(--font-mono)">'
-                  f'{result.get("word_count",0)} words analysed</div>')
-            log_scan(result, "PDF Scanner")
-            st.write("")
-            render_full_result(result)
-
-
-# ══════════════════════════════════════════════════════════════════
-# PAGE: URL SCANNER
-# ══════════════════════════════════════════════════════════════════
-elif selected == "URL Scanner":
-
-    H('''<div class="page-enter">
-        <div class="cyber-title" style="font-size:1.9rem;margin-bottom:0.3rem">🌐 URL Scanner</div>
-        <div class="cyber-subtitle" style="margin-bottom:1rem">Detect phishing, typosquatting, and malicious domains</div>
-    </div>''')
-    H('<div class="cyber-divider"></div>')
-
-    section_header("Quick Examples", "⚡")
-    URL_EXAMPLES = {
-        "Phishing Login": "http://g00gle-secure-login.xyz/signin?user=verify&redirect=bank",
-        "IP Domain":      "http://192.168.1.1/paypal-login/confirm-account.php",
-        "Legit URL":      "https://www.linkedin.com/jobs/search/?keywords=software+engineer",
-    }
-    ucols = st.columns(3)
-    for i, (lbl, url) in enumerate(URL_EXAMPLES.items()):
-        with ucols[i]:
-            if st.button(lbl, key=f"uex_{i}", use_container_width=True):
-                st.session_state["url_input"] = url
-
-    st.write("")
-    url_val = st.text_input(
-        "Enter URL",
-        value      =st.session_state.get("url_input", ""),
-        placeholder="https://example.com/path?param=value",
-        label_visibility="collapsed",
+        cross_penalty += 15
+
+    if website_domain and identity_result.get('match_score', 0) == 0:
+        cross_penalty += 20
+    elif website_domain and not identity_result.get('name_matches_domain'):
+        cross_penalty += 10
+
+    fully_consistent = (
+        bool(name and email_result and url_result)
+        and identity_result.get('name_matches_domain')
+        and bool(email_result.get('domain_matches_website'))
     )
-    if url_val:
-        H(f'<div class="url-display">{url_val}</div>')
+    cross_bonus = 10 if fully_consistent else 0
+    cross_score = max(0, min(100, cross_penalty - cross_bonus))
 
-    st.write("")
-    H('<div class="cta-btn">')
-    scan_url = st.button("⚡ Scan URL", use_container_width=True, key="scan_url_btn")
-    H("</div>")
-
-    if scan_url:
-        if not url_val.strip():
-            H('<div class="alert-warning">⚠️ Please enter a URL to scan.</div>')
-        else:
-            steps = ["🔗 Parsing URL structure…", "🛡️ Checking domain reputation…",
-                     "🔍 Scanning for phishing patterns…", "🌐 Analysing webpage content…",
-                     "📊 Calculating risk score…"]
-            pb = st.progress(0); ph = st.empty()
-            for i, step in enumerate(steps):
-                ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
-                            f'font-size:0.82rem">{step}</div>', unsafe_allow_html=True)
-                pb.progress((i + 1) / len(steps)); time.sleep(0)
-            ph.empty(); pb.empty()
-            result = analyse_url_full(url_val.strip())
-            log_scan(result, "URL Scanner")
-            st.session_state.result_url = result
-
-    if st.session_state.result_url:
-        # ✚ ADD-ON: animated cyber-security popup + "Open Website"/"Blocked"
-        # action button — rendered directly above the result card (near the
-        # threat status, before the user has to scroll) so the safe/blocked
-        # state is visible immediately. Purely additive — does not affect
-        # render_full_result() or scoring below.
-        render_threat_popup(st.session_state.result_url, url_val)
-
-        render_full_result(st.session_state.result_url)
-
-        # ── SYSTEM CONSOLE LOGGER (Detailed log requirements) ──────────────────
-        _logs = st.session_state.result_url.get("debug_logs", {})
-        print("\n" + "="*50)
-        print("[CyberLens AI - Live URL Scraper Debugger]")
-        print(f"URL String Checked  : {url_val}")
-        print(f"HTTP Return Status  : {_logs.get('http_status') or 'N/A'}")
-        print(f"Response Body Size  : {_logs.get('response_size')} bytes")
-        print(f"HTML Payload Size   : {_logs.get('html_size')} bytes")
-        print(f"Extracted Text Len  : {_logs.get('extracted_text_len')} characters")
-        print(f"Extraction Method   : {_logs.get('extraction_method')}")
-        print(f"JS Engine Run State : {_logs.get('js_rendering_used')}")
-        print(f"Scam Model Handoff  : {_logs.get('reached_text_model')}")
-        print(f"Text ML Probability : {_logs.get('text_ml_prob')}")
-        print(f"Text Rule Score     : {_logs.get('rule_score')}")
-        print(f"URL Heuristics Score: {_logs.get('url_heuristic_score')}")
-        print(f"URL Model Prob      : {_logs.get('url_ml_prob')}")
-        print(f"URL Model Top Signals: {_logs.get('url_ml_top_signals')}")
-        print(f"URL Model Fetch Note: {_logs.get('url_ml_fetch_note')}")
-        print(f"Final Combined Score: {_logs.get('final_hybrid_score')}/100")
-        print("="*50 + "\n")
-
-        # NOTE: Website Access, Extracted Website Text, Text Keyword Score,
-        # Text ML Result, and Final Combined Score are now rendered directly
-        # inside the main result card by render_full_result() (see the
-        # "Website Content Analysis" section, next to the Recommendations
-        # block) — no separate sections needed here.
-
-# ══════════════════════════════════════════════════════════════════
-# PAGE: QR SCANNER
-# ══════════════════════════════════════════════════════════════════
-elif selected == "QR Scanner":
-
-    H('''<div class="page-enter">
-        <div class="cyber-title" style="font-size:1.9rem;margin-bottom:0.3rem">📷 QR Scanner</div>
-        <div class="cyber-subtitle" style="margin-bottom:1rem">Upload a QR code image to decode and analyse for hidden threats</div>
-    </div>''')
-    H('<div class="cyber-divider"></div>')
-
-    uploaded = st.file_uploader(
-        "Upload QR Code Image",
-        type=["png","jpg","jpeg","bmp","gif"],
-        label_visibility="collapsed",
+    # ── Trusted-company cross-check ──────────────────────────────────────
+    # verify_company_identity() does pure name<->domain token matching,
+    # which is brittle for real corporate names ("Amazon.com, Inc.",
+    # "Alphabet Inc. (Google)", multi-word legal names, etc.) and has no
+    # concept of "this domain is *actually, verifiably* that company".
+    # Here we cross-check against the curated allowlist in
+    # trusted_companies.py: if the domain IS a verified official domain
+    # for a brand, AND the typed company name plausibly refers to that
+    # same brand (or no name was given to contradict it), we trust the
+    # match regardless of how the token-matching scored it. If the domain
+    # instead merely *mimics* a known brand, we escalate instead.
+    trusted_brand = match_trusted_domain(website_domain) if website_domain else None
+    impersonation_brand = None if trusted_brand else (
+        detect_brand_impersonation(website_domain) if website_domain else None
     )
-    if uploaded:
-        col1, col2 = st.columns([1, 2])
-        with col1:
-            H('<div class="scan-line">')
-            st.image(uploaded, caption="Uploaded QR Code", use_container_width=True)
-            H("</div>")
-        with col2:
-            with st.spinner("Decoding QR code…"):
-                time.sleep(0)
-                result = analyse_qr(uploaded.read())
-            if "qr_data" in result:
-                section_header("Decoded Content", "🔓")
-                H(f'<div class="url-display">{result["qr_data"]}</div>')
-                _qr_type_meta = {
-                    "URL":   ("🔗", "URL — routed through the URL Scanner pipeline"),
-                    "EMAIL": ("📧", "Email address — routed through Text Scam Detection"),
-                    "PHONE": ("📞", "Phone number — routed through Text Scam Detection"),
-                    "TEXT":  ("📝", "Plain text — routed through Text Scam Detection"),
-                }
-                _icon, _desc = _qr_type_meta.get(result.get("qr_type", "TEXT"), ("❔", "Unknown content type"))
-                H(f'<div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;font-family:var(--font-mono)">'
-                  f'{_icon} Type: {result.get("qr_type","UNKNOWN")} — {_desc}</div>')
-            log_scan(result, "QR Scanner")
-            st.session_state.result_qr = result
-        if st.session_state.result_qr:
-            st.write("")
-            render_full_result(st.session_state.result_qr)
+    name_brand = company_name_matches_brand(name) if name else None
+    brand_verified = bool(trusted_brand and (not name_brand or name_brand == trusted_brand))
 
+    # 3. Individual risk scores (0-100, higher = riskier)
+    company_name_risk = min(len(identity_result.get('suspicious_terms', [])) * 20, 80)
+    identity_mismatch_risk = (100 - identity_result.get('match_score', 0)) if website_domain else 0
+    email_risk = email_result.get('email_risk_score', 0) if email_result else 0
+    url_risk   = url_result.get('risk_score', 0) if url_result else 0
 
-# ══════════════════════════════════════════════════════════════════
-# PAGE: COMPANY VERIFIER
-# ══════════════════════════════════════════════════════════════════
-elif selected == "Company Verifier":
+    if brand_verified:
+        # Domain is confirmed genuine for this brand — a token-matching
+        # quirk (e.g. "Amazon.com, Inc." vs domain "amazon.com") shouldn't
+        # still read as an identity mismatch.
+        identity_mismatch_risk = 0
+        cross_score = 0
+    elif impersonation_brand:
+        # Domain name-drops a real brand without being its official
+        # domain — this is the impersonation case, so make sure identity
+        # mismatch and cross-verification reflect maximum suspicion
+        # rather than relying only on the URL pipeline to catch it.
+        identity_mismatch_risk = max(identity_mismatch_risk, 90)
+        cross_score = max(cross_score, 80)
 
-    H('''<div class="page-enter">
-        <div class="cyber-title" style="font-size:1.9rem;margin-bottom:0.3rem">🏢 Company Verifier</div>
-        <div class="cyber-subtitle" style="margin-bottom:1rem">Verify the legitimacy of a company, recruiter email, and website</div>
-    </div>''')
-    H('<div class="cyber-divider"></div>')
+    # 4. Weighted combination into a single risk score
+    weighted_parts = []
+    if website:
+        weighted_parts.append((url_risk, 0.35))
+        weighted_parts.append((identity_mismatch_risk, 0.15))
+    if email:
+        weighted_parts.append((email_risk, 0.30))
+    weighted_parts.append((company_name_risk, 0.10))
+    weighted_parts.append((cross_score, 0.10))
 
-    c1, c2 = st.columns(2)
-    with c1:
-        company_name    = st.text_input("Company Name",    placeholder="e.g. Royal Overseas Jobs Pvt. Ltd.")
-    with c2:
-        recruiter_email = st.text_input("Recruiter Email", placeholder="e.g. hr@companyjobs.gmail.com")
-    website_url = st.text_input("Company Website", placeholder="e.g. https://royaloverseasjobs.xyz")
+    total_weight = sum(w for _, w in weighted_parts) or 1.0
+    risk_score = round(sum(s * w for s, w in weighted_parts) / total_weight, 1)
+    risk_score = max(0.0, min(100.0, risk_score))
 
-    st.write("")
-    H('<div class="cta-btn">')
-    verify_clicked = st.button("⚡ Verify Company", use_container_width=True, key="verify_btn")
-    H("</div>")
+    TRUST_CEILING = 10.0
+    IMPERSONATION_FLOOR = 80.0
+    if brand_verified:
+        risk_score = min(risk_score, TRUST_CEILING)
+    elif impersonation_brand:
+        risk_score = max(risk_score, IMPERSONATION_FLOOR)
 
-    if verify_clicked:
-        if not company_name.strip():
-            H('<div class="alert-warning">⚠️ Please enter a company name.</div>')
-        else:
-            steps = ["🏢 Analysing company profile…", "📧 Checking recruiter email domain…",
-                     "🌐 Scanning website URL…", "🔍 Computing trust score…"]
-            pb = st.progress(0); ph = st.empty()
-            for i, step in enumerate(steps):
-                ph.markdown(f'<div style="color:var(--primary);font-family:var(--font-mono);'
-                            f'font-size:0.82rem">{step}</div>', unsafe_allow_html=True)
-                pb.progress((i + 1) / len(steps)); time.sleep(0)
-            ph.empty(); pb.empty()
-            result = analyse_company(company_name, recruiter_email, website_url)
+    ri = compute_risk_level(risk_score)
+    trust_score = max(0, round(100 - risk_score))
 
-            trust = result.get("trust_score", 0)
-            st.write("")
-            section_header("Trust Score", "🔒")
-            H(f'''
-            <div class="glass-card" style="padding:1.25rem 1.5rem">
-                <div style="display:flex;justify-content:space-between;margin-bottom:0.75rem">
-                    <span style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.75rem;letter-spacing:0.08em">LEGITIMACY SCORE</span>
-                    <span style="color:var(--primary);font-family:var(--font-display);font-weight:700;font-size:1rem">{trust}/100</span>
-                </div>
-                <div class="trust-meter-bar">
-                    <div class="trust-meter-fill" style="width:{trust}%"></div>
-                </div>
-            </div>''')
+    # 5. Assemble flags / explanation bullets from every layer
+    flags = []
+    if brand_verified:
+        flags.append(f"✓ Verified as the official {trusted_brand.title()} domain (trusted-domain registry)")
+    if impersonation_brand:
+        flags.append(
+            f"⚠ Domain mimics {impersonation_brand.title()} branding but is NOT its official domain — likely impersonation"
+        )
+    if identity_result.get('suspicious_terms'):
+        flags.append(
+            f"Company name contains common fraud-recruitment phrasing: {', '.join(identity_result['suspicious_terms'][:3])}"
+        )
+    if website_domain and not identity_result.get('name_matches_domain') and not brand_verified:
+        flags.append(
+            f'Company name "{name}" does not clearly match the website domain ("{website_domain}")' if name else
+            'No company name provided to compare against the website'
+        )
+    if email_result:
+        flags.extend(email_result.get('flags', []))
+    if url_result:
+        flags.extend(url_result.get('flags', url_result.get('indicators', [])))
+    flags.extend(cross_flags)
+    flags = list(dict.fromkeys(flags))
 
-            log_scan(result, "Company Verifier")
-            st.session_state.result_co = result
+    explanation_bullets = [f"- {f}" for f in flags[:8]] or ["- No significant red flags detected across name, email, or website."]
 
-    if st.session_state.result_co:
-        st.write("")
-        render_full_result(st.session_state.result_co)
-
-
-# ══════════════════════════════════════════════════════════════════
-# PAGE: ANALYTICS
-# ══════════════════════════════════════════════════════════════════
-elif selected == "Analytics":
-
-    H('''<div class="page-enter">
-        <div class="cyber-title" style="font-size:1.9rem;margin-bottom:0.3rem">📊 Analytics</div>
-        <div class="cyber-subtitle" style="margin-bottom:1rem">Real-time threat intelligence from your session scans</div>
-    </div>''')
-    H('<div class="cyber-divider"></div>')
-
-    # ── Clear History Button ─────────────────────────────────────────
-    if st.button("🗑️ Clear All History", key="clear_history_btn"):
-        st.session_state.stats = make_empty_stats()
-        _clear_localstorage()   # wipe from browser storage too
-        st.rerun()
-
-    stats   = st.session_state.stats
-    history = stats.get("scan_history", [])
-    total   = stats.get("total_scans", 0)
-
-    if total == 0:
-        H('''
-        <div style="text-align:center;padding:4rem 2rem;color:var(--text-dim);
-                    font-family:var(--font-mono);font-size:0.88rem;
-                    border:1px dashed rgba(0,212,255,0.12);border-radius:16px;margin:2rem 0">
-            <div style="font-size:2.5rem;margin-bottom:1rem;opacity:0.4">📊</div>
-            No scan data yet.<br>
-            <span style="color:var(--primary);font-size:0.8rem">Run some analyses first — analytics will populate automatically.</span>
-        </div>''')
+    level = ri['level']
+    if level == 'CRITICAL':
+        verdict = ("This company/recruiter profile shows multiple serious fraud indicators "
+                   "across the name, email, and website:\n\n" + "\n".join(explanation_bullets))
+    elif level == 'HIGH':
+        verdict = ("Strong red flags detected - this profile is unlikely to be legitimate:\n\n"
+                   + "\n".join(explanation_bullets))
+    elif level == 'MEDIUM':
+        verdict = ("Some suspicious or inconsistent elements were found. Verify independently "
+                   "through official channels before proceeding:\n\n" + "\n".join(explanation_bullets))
+    elif level == 'LOW':
+        verdict = ("Only minor risk factors were identified. Still recommended to verify the "
+                   "recruiter and offer through official channels:\n\n" + "\n".join(explanation_bullets))
     else:
-        # ── Summary Stat Cards ──────────────────────────────────────
-        s_threat = stats.get("threats_found", 0)
-        s_safe   = stats.get("safe_scans", 0)
-        s_crit   = stats.get("critical", 0)
-        s_susp   = stats.get("suspicious", 0)
+        verdict = "Company name, recruiter email, and website appear consistent and largely legitimate."
 
-        cols = st.columns(4)
-        stat_data = [
-            ("🔍", str(total),    "Total Scans",      "#00d4ff"),
-            ("⚠️", str(s_threat), "Threats Detected",  "#ffb340"),
-            ("✅", str(s_safe),   "Safe Scans",        "#00ff9d"),
-            ("🔴", str(s_crit),   "Critical Threats",  "#ff3366"),
-        ]
-        for col, (icon, val, lbl, color) in zip(cols, stat_data):
-            with col:
-                H(f'''
-                <div class="stat-card">
-                    <div style="font-size:1.6rem">{icon}</div>
-                    <div class="stat-value" style="background:linear-gradient(135deg,{color},{color}88);
-                         -webkit-background-clip:text">{val}</div>
-                    <div class="stat-label">{lbl}</div>
-                </div>''')
+    confidence = min(95, 45 + int(risk_score * 0.5) + (15 if (email and website) else 0))
 
-        st.write("")
-        H('<div class="cyber-divider"></div>')
+    logger.info(
+        "[Company Verifier] name=%r email=%r website=%r -> risk=%.1f level=%s "
+        "(url=%.1f email=%.1f identity_mismatch=%.1f cross=%.1f)",
+        name, email, website, risk_score, level, url_risk, email_risk,
+        identity_mismatch_risk, cross_score,
+    )
 
-        c1, c2 = st.columns(2)
-
-        with c1:
-            section_header("Threat Distribution", "📊")
-            level_counts = {}
-            for item in history:
-                lv = item.get("level", "SAFE")
-                level_counts[lv] = level_counts.get(lv, 0) + 1
-            if level_counts:
-                levels_ordered = ["SAFE", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
-                colors_ordered = ["#00ff9d", "#3b82f6", "#ffb340", "#f97316", "#ff3366"]
-                lv_labels = [l for l in levels_ordered if l in level_counts]
-                lv_vals   = [level_counts[l] for l in lv_labels]
-                lv_colors = [colors_ordered[levels_ordered.index(l)] for l in lv_labels]
-
-                fig = go.Figure(go.Pie(
-                    labels=lv_labels, values=lv_vals,
-                    marker=dict(colors=lv_colors, line=dict(color="#020409", width=2)),
-                    hole=0.5, textinfo="label+percent",
-                    textfont=dict(family="Rajdhani", size=12, color="#c8d8e8"),
-                    hovertemplate="%{label}: %{value} scan(s)<extra></extra>",
-                ))
-                fig.update_layout(**PLOTLY_LAYOUT, height=280)
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                H('<div style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.82rem;padding:2rem">No distribution data yet.</div>')
-
-        with c2:
-            section_header("Scan Category Breakdown", "🗂️")
-            type_counts = {}
-            for item in history:
-                t = item.get("type", "Unknown")
-                type_counts[t] = type_counts.get(t, 0) + 1
-            if type_counts:
-                types  = list(type_counts.keys())
-                tcounts = [type_counts[t] for t in types]
-                fig = go.Figure(go.Bar(
-                    x=tcounts, y=types, orientation="h",
-                    marker=dict(color=CYBER_COLORS[:len(types)], opacity=0.85,
-                                line=dict(color="rgba(0,0,0,0)", width=0)),
-                    text=tcounts, textposition="outside", textfont_color="#5a7a9a",
-                ))
-                fig.update_layout(**PLOTLY_LAYOUT, height=280,
-                    xaxis=dict(showgrid=True, gridcolor="rgba(0,212,255,0.05)", color="#5a7a9a"),
-                    yaxis=dict(showgrid=False, color="#5a7a9a"))
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                H('<div style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.82rem;padding:2rem">No category data yet.</div>')
-
-        H('<div class="cyber-divider"></div>')
-
-        c3, c4 = st.columns([3, 2])
-
-        with c3:
-            section_header("Scan History Table", "📋")
-            if history:
-                H('''<div class="scan-history-table">
-                <div class="sht-header">
-                    <span>#</span><span>Type</span><span>Level</span><span>Score</span><span>Time</span>
-                </div>''')
-                for idx, item in enumerate(reversed(history[-20:]), 1):
-                    lv    = item.get("level", "SAFE")
-                    stype = item.get("type",  "—")
-                    score = item.get("score", 0)
-                    ts    = item.get("ts",    "—")
-                    lv_colors_map = {
-                        "SAFE": "#00ff9d", "LOW": "#3b82f6",
-                        "MEDIUM": "#ffb340", "HIGH": "#f97316", "CRITICAL": "#ff3366"
-                    }
-                    lv_color = lv_colors_map.get(lv, "#5a7a9a")
-                    H(f'''<div class="sht-row">
-                        <span style="color:var(--text-dim)">{idx}</span>
-                        <span style="color:var(--text)">{stype}</span>
-                        <span><span class="feed-level-badge badge-{lv}" style="font-size:0.65rem">{lv}</span></span>
-                        <span style="color:{lv_color};font-family:var(--font-mono)">{score}/100</span>
-                        <span style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.72rem">{ts}</span>
-                    </div>''')
-                H('</div>')
-
-        with c4:
-            section_header("Risk Score Timeline", "📈")
-            if len(history) >= 2:
-                scores = [item.get("score", 0) for item in history[-15:]]
-                idxs   = list(range(1, len(scores)+1))
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=idxs, y=scores, mode="lines+markers",
-                    line=dict(color="#00d4ff", width=2.5),
-                    marker=dict(size=7, color="#00d4ff", line=dict(color="#020409", width=2)),
-                    fill="tozeroy", fillcolor="rgba(0,212,255,0.05)",
-                    hovertemplate="Scan %{x}: %{y}/100<extra></extra>",
-                ))
-                fig.update_layout(**PLOTLY_LAYOUT, height=280,
-                    xaxis=dict(showgrid=False, color="#5a7a9a", title="Scan #"),
-                    yaxis=dict(showgrid=True, gridcolor="rgba(0,212,255,0.05)", color="#5a7a9a", range=[0,100]))
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                H('<div style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.82rem;padding:2rem">Need at least 2 scans for timeline.</div>')
-
-
-# ══════════════════════════════════════════════════════════════════
-# PAGE: ABOUT
-# ══════════════════════════════════════════════════════════════════
-elif selected == "About":
-
-    H('''
-    <div class="about-hero page-enter">
-        <div style="font-size:3.5rem;margin-bottom:1rem;
-                    filter:drop-shadow(0 0 25px rgba(0,212,255,0.5));
-                    animation:iconFloat 4s ease-in-out infinite;display:inline-block">🛡️</div>
-        <div class="cyber-title" style="margin-bottom:0.75rem">Defending Users Against<br>Digital Threats</div>
-        <div class="cyber-subtitle">An AI-powered platform built to protect everyday users from online scams</div>
-    </div>
-    ''')
-    H('<div class="cyber-divider"></div>')
-
-    section_header("What CyberLens Protects Against", "🎯")
-    st.write("")
-    protect_items = [
-        ("🧠", "Smart Threat Scan", "Analyzes messages for\nhidden scam patterns"),
-        ("🔗", "Phishing Links",  "Malicious URLs designed\nto steal credentials"),
-        ("📷", "QR Scams",        "QR codes redirecting\nto fraud sites"),
-        ("👤", "Fake Recruiters", "Impersonated HR &\nrecruiter identities"),
-        ("📄", "Fraud PDFs",      "Documents with embedded\nmalicious payloads"),
-    ]
-    pcols = st.columns(5)
-    for col, (icon, title, desc) in zip(pcols, protect_items):
-        with col:
-            H(f'''
-            <div class="protect-card">
-                <div style="font-size:1.8rem;margin-bottom:0.6rem;
-                            filter:drop-shadow(0 0 8px rgba(0,212,255,0.3))">{icon}</div>
-                <div style="font-family:var(--font-display);font-size:0.65rem;font-weight:700;
-                            color:var(--primary);letter-spacing:0.1em;text-transform:uppercase;
-                            margin-bottom:0.4rem">{title}</div>
-                <div style="font-size:0.78rem;color:var(--text-dim);line-height:1.5">{desc}</div>
-            </div>''')
-
-    st.write("")
-    H('<div class="cyber-divider"></div>')
-
-    section_header("How It Works", "⚙️")
-    st.write("")
-    flow_steps = [
-        ("01", "📤", "Upload",       "Submit text, URL, QR image, or document"),
-        ("02", "🧠", "AI Analysis",  "NLP + ML engine scans for threat signals"),
-        ("03", "📊", "Risk Scoring", "Multi-factor risk score calculated (0–100)"),
-        ("04", "📋", "Threat Report","Detailed verdict with recommendations"),
-    ]
-    fcols = st.columns(4)
-    for col, (num, icon, title, desc) in zip(fcols, flow_steps):
-        with col:
-            H(f'''
-            <div style="text-align:center;padding:1.5rem 0.5rem">
-                <div style="font-family:var(--font-display);font-size:0.6rem;letter-spacing:0.2em;
-                            color:var(--text-dim);margin-bottom:0.75rem">STEP {num}</div>
-                <div style="font-size:2rem;margin-bottom:0.6rem;
-                            filter:drop-shadow(0 0 8px rgba(0,212,255,0.3))">{icon}</div>
-                <div style="font-family:var(--font-display);font-size:0.7rem;font-weight:700;
-                            color:var(--primary);letter-spacing:0.08em;text-transform:uppercase;
-                            margin-bottom:0.4rem">{title}</div>
-                <div style="font-size:0.82rem;color:var(--text-dim);line-height:1.5">{desc}</div>
-            </div>''')
-
-    st.write("")
-    H('<div class="cyber-divider"></div>')
-
-    section_header("Why This Project Matters", "❤️")
-    st.write("")
-    card('''
-    <div style="text-align:center;padding:1rem 0">
-        <div style="font-size:2.5rem;margin-bottom:1rem">⚠️</div>
-        <div style="font-family:var(--font-display);font-size:0.85rem;font-weight:700;
-                    color:var(--primary);letter-spacing:0.08em;text-transform:uppercase;
-                    margin-bottom:1rem">The Problem Is Real</div>
-        <div style="font-size:1rem;color:var(--text);line-height:1.9;max-width:680px;
-                    margin:0 auto;font-family:var(--font-body)"> 
-            Online scams are becoming increasingly sophisticated, targeting people through 
-            suspicious messages, phishing links, fake websites, QR codes, images, documents, 
-            and other digital channels.<br><br> 
-            <strong style="color:var(--primary)">CyberLens AI was built to help identify suspicious 
-            digital threats before they can cause harm</strong> — combining machine learning, 
-            natural language processing, OCR, URL analysis, and cybersecurity heuristics 
-            into an accessible, real-time threat detection platform.
-        </div>
-    </div>
-    ''')
-
-    st.write("")
-    H('<div class="cyber-divider"></div>')
-
-    section_header("Future Vision", "🚀")
-    st.write("")
-    roadmap = [
-    ("📱", "Mobile Application – Develop a mobile-responsive application so users can detect scams anytime, anywhere."),
-    ("💬", "AI Chatbot – Guide users and answer questions about the website."),
-    ("🌍", "Complete multilingual website interface."),
-    ("🎙️", "Voice scam detection using uploaded audio recordings."),
-    ("👤", "User login and personal accounts to save scan history."),
-]
-    for icon, item in roadmap:
-        H(f'''
-        <div style="display:flex;align-items:center;gap:1rem;padding:0.65rem 1rem;
-                    background:rgba(0,212,255,0.02);border:1px solid rgba(0,212,255,0.07);
-                    border-left:2px solid rgba(124,58,237,0.5);border-radius:0 8px 8px 0;
-                    margin-bottom:0.5rem;font-family:var(--font-body);font-size:0.9rem;color:var(--text)">
-            <span style="font-size:1.1rem">{icon}</span> {item}
-        </div>''')
-
-    st.write("")
-    H('''
-    <div style="text-align:center;padding:2.5rem 0 1rem;color:var(--text-dim);
-                font-family:var(--font-mono);font-size:0.75rem;letter-spacing:0.06em">
-        <span style="color:var(--primary);font-family:var(--font-display);
-                     font-size:0.65rem;letter-spacing:0.15em">CYBERLENS AI</span>
-        &nbsp;—&nbsp; Data Science Project by Puvisha S , Vidhya Priya P , Hemanthika M
-    </div>
-    ''')
+    return {
+        'risk_score':         risk_score,
+        'risk_level':         level,
+        'risk_color':         ri['color'],
+        'risk_emoji':         ri['emoji'],
+        'confidence':         confidence,
+        'trust_score':        trust_score,
+        'company_analysis':   identity_result,
+        'recruiter_analysis': email_result,
+        'url_analysis':       url_result,
+        'cross_verification': {
+            'flags':      cross_flags,
+            'penalty':    cross_penalty,
+            'bonus':      cross_bonus,
+            'consistent': fully_consistent,
+        },
+        'trusted_domain_check': {
+            'verified_brand':      trusted_brand if brand_verified else None,
+            'impersonation_brand': impersonation_brand,
+            'brand_verified':      brand_verified,
+        },
+        'flags':            flags,
+        'suspicious_kws':   flags[:8],
+        'indicators':       flags,
+        'recommendations':  get_recommendations(level),
+        'verdict':          verdict,
+        'scan_type':        'Company Verifier',
+    }

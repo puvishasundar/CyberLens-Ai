@@ -72,6 +72,80 @@ def _is_mostly_latin(text: str) -> bool:
     return latin / max(len(text.replace(' ', '')), 1) > 0.75
 
 
+# ─── Latin-script language scoring (statistical fallback) ─────────────────────
+# Used only when the fast script heuristic finds no Indic script AND langdetect
+# is unavailable/failed. Rather than a handful of hardcoded marker substrings
+# checked for just one language (the old approach — brittle, one-sided, and
+# easily beaten by short or punctuation-heavy text), this tokenises the text
+# and scores it against much larger, symmetric per-language stopword profiles
+# (50+ common function words each) plus diacritic/punctuation signals that are
+# near-exclusive to Spanish among our supported Latin-script languages.
+
+_LATIN_LANG_PROFILES = {
+    'es': {
+        'stopwords': {
+            'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'al',
+            'a', 'en', 'que', 'y', 'o', 'u', 'para', 'por', 'con', 'sin', 'sobre',
+            'entre', 'como', 'pero', 'si', 'no', 'se', 'su', 'sus', 'le', 'les', 'lo',
+            'me', 'te', 'nos', 'mi', 'tu', 'este', 'esta', 'estos', 'estas', 'ese',
+            'esa', 'esos', 'esas', 'es', 'son', 'fue', 'ser', 'estar', 'han', 'ha',
+            'hay', 'muy', 'más', 'menos', 'también', 'porque', 'cuando', 'donde',
+            'quien', 'cual', 'cuales', 'todo', 'toda', 'todos', 'todas', 'nada',
+            'algo', 'alguien', 'nadie', 'usted', 'ustedes', 'nosotros', 'ellos',
+            'ellas', 'él', 'ella', 'gracias', 'favor', 'cuenta', 'banco', 'pago',
+            'dinero', 'urgente', 'enlace', 'ahora', 'hoy', 'debe', 'puede', 'informacion',
+            'información', 'contraseña', 'código', 'codigo', 'verificar', 'inmediatamente',
+        },
+        'signal_chars': set('ñáéíóúü¿¡'),
+    },
+    'en': {
+        'stopwords': {
+            'the', 'a', 'an', 'of', 'to', 'in', 'on', 'at', 'for', 'with', 'without',
+            'and', 'or', 'but', 'if', 'not', 'is', 'are', 'was', 'were', 'be', 'been',
+            'being', 'have', 'has', 'had', 'you', 'your', 'yours', 'i', 'me', 'my',
+            'we', 'our', 'they', 'their', 'he', 'she', 'it', 'this', 'that', 'these',
+            'those', 'as', 'by', 'from', 'about', 'into', 'than', 'then', 'so',
+            'because', 'when', 'where', 'who', 'which', 'all', 'any', 'some', 'no',
+            'nothing', 'someone', 'nobody', 'thanks', 'please', 'account', 'bank',
+            'payment', 'money', 'urgent', 'click', 'link', 'now', 'today', 'must',
+            'can', 'information', 'password', 'code', 'verify', 'immediately',
+        },
+        'signal_chars': set(),
+    },
+}
+
+
+def _latin_lang_score(text: str) -> tuple[str, float]:
+    """
+    Statistical fallback for choosing between our Latin-script supported
+    languages (English, Spanish) when langdetect isn't available/decisive.
+
+    Tokenises the whole text and, for each candidate language, computes the
+    fraction of tokens that are common stopwords/function-words for that
+    language, boosted by diacritic/punctuation characters that are strong,
+    near-exclusive signals for Spanish (ñ, á, é, í, ó, ú, ¿, ¡).
+
+    Returns (best_lang, score) — score is a rough 0..1 strength indicator,
+    not a calibrated probability.
+    """
+    tokens = re.findall(r"[a-zàáâãäåèéêëìíîïòóôõöùúûüñç]+", text.lower())
+    if not tokens:
+        return 'en', 0.0
+
+    scores = {}
+    for lang, profile in _LATIN_LANG_PROFILES.items():
+        hits = sum(1 for t in tokens if t in profile['stopwords'])
+        ratio = hits / len(tokens)
+        char_hits = sum(1 for ch in text.lower() if ch in profile['signal_chars'])
+        # Each diacritic/punctuation signal nudges the score up, since these
+        # characters essentially never appear in English.
+        ratio += min(char_hits * 0.05, 0.3)
+        scores[lang] = ratio
+
+    best_lang = max(scores, key=scores.get)
+    return best_lang, scores[best_lang]
+
+
 # ─── Language Detection ────────────────────────────────────────────────────────
 
 def detect_language(text: str) -> dict:
@@ -128,23 +202,16 @@ def detect_language(text: str) -> dict:
     except Exception:
         pass
 
-    # 3️⃣  Latin script → English fallback
+    # 3️⃣  Latin script → statistical language scoring fallback
     if _is_mostly_latin(text):
-        # Could be Spanish — simple heuristic: common Spanish markers
-        es_markers = ['de ', 'la ', 'el ', 'en ', 'que ', 'con ', 'para ', 'por ', 'los ', 'las ']
-        es_hits = sum(1 for m in es_markers if m in text.lower())
-        if es_hits >= 3:
-            meta = SUPPORTED_LANGUAGES['es']
-            return {
-                'lang_code': 'es', 'lang_name': meta['name'],
-                'native_name': meta['native'], 'flag': meta['flag'],
-                'confidence': 0.65, 'is_supported': True, 'method': 'fallback',
-            }
-        meta = SUPPORTED_LANGUAGES['en']
+        best_lang, score = _latin_lang_score(text)
+        meta = SUPPORTED_LANGUAGES[best_lang]
+        # Map the raw stopword/signal score into a reasonable confidence band.
+        confidence = round(min(0.60 + score, 0.95), 2)
         return {
-            'lang_code': 'en', 'lang_name': meta['name'],
+            'lang_code': best_lang, 'lang_name': meta['name'],
             'native_name': meta['native'], 'flag': meta['flag'],
-            'confidence': 0.70, 'is_supported': True, 'method': 'fallback',
+            'confidence': confidence, 'is_supported': True, 'method': 'fallback',
         }
 
     # 4️⃣  Unknown
@@ -291,9 +358,10 @@ def tag_segments(text: str) -> list[dict]:
         }
 
     Blank lines are skipped. Lines with no dominant Indic script fall back
-    to the same Latin-heuristic used in detect_language() (Spanish-marker
-    check, else English, else 'unknown') so short lines still get a
-    reasonable tag without paying for langdetect per line.
+    to the same Latin-script statistical scoring used in detect_language()
+    (_latin_lang_score — English vs Spanish stopword/signal scoring, else
+    'unknown') so short lines still get a reasonable tag without paying for
+    langdetect per line.
     """
     segments = []
     for raw_line in text.splitlines():
@@ -304,9 +372,7 @@ def tag_segments(text: str) -> list[dict]:
         code = _script_detect(line)
         if code is None:
             if _is_mostly_latin(line):
-                es_markers = ['de ', 'la ', 'el ', 'en ', 'que ', 'con ', 'para ', 'por ', 'los ', 'las ']
-                es_hits = sum(1 for m in es_markers if m in line.lower())
-                code = 'es' if es_hits >= 2 else 'en'
+                code, _ = _latin_lang_score(line)
             else:
                 code = 'unknown'
 
