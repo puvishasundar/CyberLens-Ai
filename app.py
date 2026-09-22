@@ -600,15 +600,11 @@ def render_full_result(result: dict) -> None:
 
     # ── Use st.components to render the full result card (SVG safe) ───────────
     # Dynamic height: base + extras for keywords and recommendations
-    # NOTE: _kw_rows is still computed (kept intact — it's derived from `kws`,
-    # which continues to be used for backend risk scoring elsewhere) but is no
-    # longer added into _height, since the Suspicious Indicators section that
-    # used to occupy that vertical space is no longer rendered in the UI.
     _kw_rows  = max(1, len(kws) // 4)
     _rec_rows = len(recs)
     _url_rows = len(url_detail_items) if url_detail_items else 0
     _text_extra = min(240, len(_raw_text) // 4) if _raw_text else 40
-    _height   = 700 + (_rec_rows * 65) + (_url_rows * 48) + (_ai_rows_count * 48) + 260 + _text_extra
+    _height   = 700 + (_kw_rows * 40) + (_rec_rows * 65) + (_url_rows * 48) + (_ai_rows_count * 48) + 260 + _text_extra
 
     import streamlit.components.v1 as components
     components.html(f"""
@@ -748,6 +744,10 @@ def render_full_result(result: dict) -> None:
   </div>
 
   <div class="divider"></div>
+
+  <!-- Suspicious Indicators -->
+  <div class="section-hdr">⚡ Suspicious Indicators</div>
+  <div style="line-height:2.4;margin-top:.25rem">{kw_chips_html}</div>
 
   {url_details_html}
 
@@ -1246,12 +1246,23 @@ body{{background:#020409;font-family:'Rajdhani',sans-serif;overflow:hidden}}
       <span class="t-sep">//</span>
       <span>⚠️ Threats Detected: <span class="t-warn">{_threats}</span></span>
       <span class="t-sep">//</span>
+      <span>🔍 ML Engine: <span class="t-safe">TF-IDF + LogReg</span></span>
+      <span class="t-sep">//</span>
+      <span class="t-danger">🚨 ALERT: Fake job scams rising 340% — Stay vigilant</span>
+      <span class="t-sep">//</span>
+      <span>🛡️ NLP Scam Patterns: <span class="t-safe">42 signatures loaded</span></span>
+      <span class="t-sep">//</span>
       <span>⚡ AI Threat Engine <span class="t-safe">ACTIVE</span></span>
       <span class="t-sep">//</span>
       <span>📊 Session Scans: <span class="t-safe">{_total_scans}</span></span>
       <span class="t-sep">//</span>
       <span>⚠️ Threats Detected: <span class="t-warn">{_threats}</span></span>
       <span class="t-sep">//</span>
+      <span>🔍 ML Engine: <span class="t-safe">TF-IDF + LogReg</span></span>
+      <span class="t-sep">//</span>
+      <span class="t-danger">🚨 ALERT: Fake job scams rising 340% — Stay vigilant</span>
+      <span class="t-sep">//</span>
+      <span>🛡️ NLP Scam Patterns: <span class="t-safe">42 signatures loaded</span></span>
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:.6rem">
@@ -1600,35 +1611,16 @@ elif selected == "Analyzer":
                         'was_translated':     result.get('was_translated', False),
                         'translation_method': result.get('translation_method', ''),
                         'translation_success':result.get('translation_success', False),
-                        'translation_error':  result.get('translation_error'),
                     })
                     H(badge_html)
-
-                    # ── English translation — shown directly in the results,   ──
-                    # not tucked away, so the user always sees what was analysed.
-                    if result.get('translation_success') and result.get('translated_text'):
-                        H(f'''
-                        <div style="
-                            background:rgba(0,255,157,0.06);
-                            border:1px solid rgba(0,255,157,0.25);
-                            border-radius:12px;padding:0.75rem 1rem;
-                            margin-bottom:0.75rem;">
-                            <div style="font-family:monospace;font-size:0.75rem;
-                                        color:#00ff9d;letter-spacing:0.03em;margin-bottom:0.35rem">
-                                🔤 ENGLISH TRANSLATION
-                            </div>
-                            <div style="font-size:0.9rem;color:#e5f5ef;line-height:1.5">
-                                {result['translated_text']}
-                            </div>
-                        </div>''')
-                    elif result.get('lang_code') != 'en' and not result.get('translation_success'):
-                        H('<div class="alert-warning" style="margin-bottom:0.75rem">'
-                          '⚠️ Translation unavailable — the original-language text was analysed instead.</div>')
 
                     # Original text in a native Streamlit expander (no HTML needed)
                     if result.get('original_text') and result['original_text'] != result.get('translated_text'):
                         with st.expander(f"📄 Original {result.get('lang_name', '')} text"):
                             st.text(result['original_text'])
+                    if result.get('was_translated') and result.get('translated_text'):
+                        with st.expander("🔤 Translated text used for analysis"):
+                            st.text(result['translated_text'])
 
                 elif result.get('lang_code') == 'en':
                     H(language_badge_html({
@@ -2102,7 +2094,7 @@ elif selected == "About":
                     filter:drop-shadow(0 0 25px rgba(0,212,255,0.5));
                     animation:iconFloat 4s ease-in-out infinite;display:inline-block">🛡️</div>
         <div class="cyber-title" style="margin-bottom:0.75rem">Defending Users Against<br>Digital Threats</div>
-        <div class="cyber-subtitle">An AI-powered platform built to protect everyday users from online scams</div>
+        <div class="cyber-subtitle">An AI-powered platform built to protect job seekers and everyday users from online scams</div>
     </div>
     ''')
     H('<div class="cyber-divider"></div>')
@@ -2110,7 +2102,7 @@ elif selected == "About":
     section_header("What CyberLens Protects Against", "🎯")
     st.write("")
     protect_items = [
-        ("🧠", "Smart Threat Scan", "Analyzes messages for\nhidden scam patterns"),
+        ("💼", "Fake Jobs",       "Fraudulent internship\nand job postings"),
         ("🔗", "Phishing Links",  "Malicious URLs designed\nto steal credentials"),
         ("📷", "QR Scams",        "QR codes redirecting\nto fraud sites"),
         ("👤", "Fake Recruiters", "Impersonated HR &\nrecruiter identities"),
@@ -2167,14 +2159,13 @@ elif selected == "About":
                     color:var(--primary);letter-spacing:0.08em;text-transform:uppercase;
                     margin-bottom:1rem">The Problem Is Real</div>
         <div style="font-size:1rem;color:var(--text);line-height:1.9;max-width:680px;
-                    margin:0 auto;font-family:var(--font-body)"> 
-            Online scams are becoming increasingly sophisticated, targeting people through 
-            suspicious messages, phishing links, fake websites, QR codes, images, documents, 
-            and other digital channels.<br><br> 
-            <strong style="color:var(--primary)">CyberLens AI was built to help identify suspicious 
-            digital threats before they can cause harm</strong> — combining machine learning, 
-            natural language processing, OCR, URL analysis, and cybersecurity heuristics 
-            into an accessible, real-time threat detection platform.
+                    margin:0 auto;font-family:var(--font-body)">
+            Thousands of students and job seekers lose money to online scams every single day.
+            Fake internship offers, phishing emails, and fraudulent recruiters target vulnerable people
+            who simply want a better future.<br><br>
+            <strong style="color:var(--primary)">CyberLens AI was built to help identify suspicious digital threats
+            before victims are harmed</strong> — combining machine learning, NLP, and cybersecurity heuristics
+            into an accessible, real-time intelligence platform.
         </div>
     </div>
     ''')
@@ -2204,6 +2195,7 @@ elif selected == "About":
     H('''
     <div style="text-align:center;padding:2.5rem 0 1rem;color:var(--text-dim);
                 font-family:var(--font-mono);font-size:0.75rem;letter-spacing:0.06em">
+        Built with Python · Streamlit · scikit-learn · NLTK · Plotly<br><br>
         <span style="color:var(--primary);font-family:var(--font-display);
                      font-size:0.65rem;letter-spacing:0.15em">CYBERLENS AI</span>
         &nbsp;—&nbsp; Data Science Project by Puvisha S , Vidhya Priya P , Hemanthika M
