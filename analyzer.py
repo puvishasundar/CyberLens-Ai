@@ -110,7 +110,7 @@ def analyse_text(text: str) -> dict:
     level       = risk_info['level']
     confidence  = round(ml_result['confidence'] * 100, 1)
 
-    top_features = get_feature_importance(text, top_n=8)
+    top_features = get_feature_importance(analysis_text, top_n=8)
     feature_words = [f[0] for f in top_features]
 
     all_suspicious = list(set(kw_result['found'] + feature_words))[:12]
