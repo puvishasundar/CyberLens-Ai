@@ -72,80 +72,6 @@ def _is_mostly_latin(text: str) -> bool:
     return latin / max(len(text.replace(' ', '')), 1) > 0.75
 
 
-# ─── Latin-script language scoring (statistical fallback) ─────────────────────
-# Used only when the fast script heuristic finds no Indic script AND langdetect
-# is unavailable/failed. Rather than a handful of hardcoded marker substrings
-# checked for just one language (the old approach — brittle, one-sided, and
-# easily beaten by short or punctuation-heavy text), this tokenises the text
-# and scores it against much larger, symmetric per-language stopword profiles
-# (50+ common function words each) plus diacritic/punctuation signals that are
-# near-exclusive to Spanish among our supported Latin-script languages.
-
-_LATIN_LANG_PROFILES = {
-    'es': {
-        'stopwords': {
-            'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'al',
-            'a', 'en', 'que', 'y', 'o', 'u', 'para', 'por', 'con', 'sin', 'sobre',
-            'entre', 'como', 'pero', 'si', 'no', 'se', 'su', 'sus', 'le', 'les', 'lo',
-            'me', 'te', 'nos', 'mi', 'tu', 'este', 'esta', 'estos', 'estas', 'ese',
-            'esa', 'esos', 'esas', 'es', 'son', 'fue', 'ser', 'estar', 'han', 'ha',
-            'hay', 'muy', 'más', 'menos', 'también', 'porque', 'cuando', 'donde',
-            'quien', 'cual', 'cuales', 'todo', 'toda', 'todos', 'todas', 'nada',
-            'algo', 'alguien', 'nadie', 'usted', 'ustedes', 'nosotros', 'ellos',
-            'ellas', 'él', 'ella', 'gracias', 'favor', 'cuenta', 'banco', 'pago',
-            'dinero', 'urgente', 'enlace', 'ahora', 'hoy', 'debe', 'puede', 'informacion',
-            'información', 'contraseña', 'código', 'codigo', 'verificar', 'inmediatamente',
-        },
-        'signal_chars': set('ñáéíóúü¿¡'),
-    },
-    'en': {
-        'stopwords': {
-            'the', 'a', 'an', 'of', 'to', 'in', 'on', 'at', 'for', 'with', 'without',
-            'and', 'or', 'but', 'if', 'not', 'is', 'are', 'was', 'were', 'be', 'been',
-            'being', 'have', 'has', 'had', 'you', 'your', 'yours', 'i', 'me', 'my',
-            'we', 'our', 'they', 'their', 'he', 'she', 'it', 'this', 'that', 'these',
-            'those', 'as', 'by', 'from', 'about', 'into', 'than', 'then', 'so',
-            'because', 'when', 'where', 'who', 'which', 'all', 'any', 'some', 'no',
-            'nothing', 'someone', 'nobody', 'thanks', 'please', 'account', 'bank',
-            'payment', 'money', 'urgent', 'click', 'link', 'now', 'today', 'must',
-            'can', 'information', 'password', 'code', 'verify', 'immediately',
-        },
-        'signal_chars': set(),
-    },
-}
-
-
-def _latin_lang_score(text: str) -> tuple[str, float]:
-    """
-    Statistical fallback for choosing between our Latin-script supported
-    languages (English, Spanish) when langdetect isn't available/decisive.
-
-    Tokenises the whole text and, for each candidate language, computes the
-    fraction of tokens that are common stopwords/function-words for that
-    language, boosted by diacritic/punctuation characters that are strong,
-    near-exclusive signals for Spanish (ñ, á, é, í, ó, ú, ¿, ¡).
-
-    Returns (best_lang, score) — score is a rough 0..1 strength indicator,
-    not a calibrated probability.
-    """
-    tokens = re.findall(r"[a-zàáâãäåèéêëìíîïòóôõöùúûüñç]+", text.lower())
-    if not tokens:
-        return 'en', 0.0
-
-    scores = {}
-    for lang, profile in _LATIN_LANG_PROFILES.items():
-        hits = sum(1 for t in tokens if t in profile['stopwords'])
-        ratio = hits / len(tokens)
-        char_hits = sum(1 for ch in text.lower() if ch in profile['signal_chars'])
-        # Each diacritic/punctuation signal nudges the score up, since these
-        # characters essentially never appear in English.
-        ratio += min(char_hits * 0.05, 0.3)
-        scores[lang] = ratio
-
-    best_lang = max(scores, key=scores.get)
-    return best_lang, scores[best_lang]
-
-
 # ─── Language Detection ────────────────────────────────────────────────────────
 
 def detect_language(text: str) -> dict:
@@ -202,16 +128,23 @@ def detect_language(text: str) -> dict:
     except Exception:
         pass
 
-    # 3️⃣  Latin script → statistical language scoring fallback
+    # 3️⃣  Latin script → English fallback
     if _is_mostly_latin(text):
-        best_lang, score = _latin_lang_score(text)
-        meta = SUPPORTED_LANGUAGES[best_lang]
-        # Map the raw stopword/signal score into a reasonable confidence band.
-        confidence = round(min(0.60 + score, 0.95), 2)
+        # Could be Spanish — simple heuristic: common Spanish markers
+        es_markers = ['de ', 'la ', 'el ', 'en ', 'que ', 'con ', 'para ', 'por ', 'los ', 'las ']
+        es_hits = sum(1 for m in es_markers if m in text.lower())
+        if es_hits >= 3:
+            meta = SUPPORTED_LANGUAGES['es']
+            return {
+                'lang_code': 'es', 'lang_name': meta['name'],
+                'native_name': meta['native'], 'flag': meta['flag'],
+                'confidence': 0.65, 'is_supported': True, 'method': 'fallback',
+            }
+        meta = SUPPORTED_LANGUAGES['en']
         return {
-            'lang_code': best_lang, 'lang_name': meta['name'],
+            'lang_code': 'en', 'lang_name': meta['name'],
             'native_name': meta['native'], 'flag': meta['flag'],
-            'confidence': confidence, 'is_supported': True, 'method': 'fallback',
+            'confidence': 0.70, 'is_supported': True, 'method': 'fallback',
         }
 
     # 4️⃣  Unknown
@@ -243,24 +176,7 @@ def translate_to_english(text: str, src_lang: str) -> dict:
             'error': None,
         }
 
-    _errors = []
-
-    # 1️⃣  googletrans (free, unofficial Google Translate API)
-    try:
-        from googletrans import Translator
-        translated = Translator().translate(text, src=src_lang, dest='en').text
-        if translated and translated.strip():
-            return {
-                'translated_text': translated,
-                'success': True,
-                'method': 'googletrans',
-                'error': None,
-            }
-    except Exception as e1:
-        _errors.append(f'googletrans: {e1}')
-
-    # 2️⃣  deep-translator (GoogleTranslator) — fallback if googletrans is
-    # missing, incompatible, or rate-limited
+    # 1️⃣  deep-translator (GoogleTranslator)
     try:
         from deep_translator import GoogleTranslator
         translated = GoogleTranslator(source=src_lang, target='en').translate(text)
@@ -272,16 +188,16 @@ def translate_to_english(text: str, src_lang: str) -> dict:
                 'error': None,
             }
     except Exception as e2:
-        _errors.append(f'deep_translator: {e2}')
+        _err2 = str(e2)
+    else:
+        _err2 = None
 
     # 3️⃣  Passthrough — translation unavailable, return original
     return {
         'translated_text': text,
         'success': False,
         'method': 'passthrough',
-        'error': 'Translation backends unavailable (' + '; '.join(_errors) + ').'
-                 if _errors else
-                 'Translation backends unavailable. Install googletrans or deep-translator.',
+        'error': 'Translation backends unavailable. Install googletrans or deep-translator.',
     }
 
 
@@ -358,10 +274,9 @@ def tag_segments(text: str) -> list[dict]:
         }
 
     Blank lines are skipped. Lines with no dominant Indic script fall back
-    to the same Latin-script statistical scoring used in detect_language()
-    (_latin_lang_score — English vs Spanish stopword/signal scoring, else
-    'unknown') so short lines still get a reasonable tag without paying for
-    langdetect per line.
+    to the same Latin-heuristic used in detect_language() (Spanish-marker
+    check, else English, else 'unknown') so short lines still get a
+    reasonable tag without paying for langdetect per line.
     """
     segments = []
     for raw_line in text.splitlines():
@@ -372,7 +287,9 @@ def tag_segments(text: str) -> list[dict]:
         code = _script_detect(line)
         if code is None:
             if _is_mostly_latin(line):
-                code, _ = _latin_lang_score(line)
+                es_markers = ['de ', 'la ', 'el ', 'en ', 'que ', 'con ', 'para ', 'por ', 'los ', 'las ']
+                es_hits = sum(1 for m in es_markers if m in line.lower())
+                code = 'es' if es_hits >= 2 else 'en'
             else:
                 code = 'unknown'
 
@@ -439,19 +356,15 @@ def language_badge_html(lang_result: dict) -> str:
     t_success = lang_result.get('translation_success', False)
 
     native_str = f' · {native}' if native and native != lang_name else ''
-    # A translation was *attempted* whenever the source language isn't English —
-    # regardless of whether it ultimately succeeded — so we can always tell the
-    # user what happened instead of staying silent on failure.
-    attempted  = was_trans or bool(method) and method != 'passthrough' or lang_result.get('translation_error')
     t_color    = '#00ff9d' if t_success else '#ffb340'
-    t_label    = (f'✅ Translated via {method}' if t_success else
-                  '⚠️ Translation unavailable — original text analysed') if attempted else ''
+    t_label    = f'✅ Translated via {method}' if (was_trans and t_success) else (
+                 f'⚠️ Translation unavailable — original text analysed' if was_trans else '')
 
     trans_row = f'''
         <div style="margin-top:0.35rem;font-size:0.72rem;color:{t_color};
                     font-family:monospace;letter-spacing:0.03em">
             🌐 {t_label}
-        </div>''' if attempted else ''
+        </div>''' if was_trans else ''
 
     return f'''
     <div style="
