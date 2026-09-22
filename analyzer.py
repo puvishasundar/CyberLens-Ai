@@ -74,21 +74,100 @@ _RECS = {
 def get_recommendations(level: str) -> list:
     return _RECS.get(level, _RECS['SAFE'])
 
+def _extract_contact_info(text: str) -> dict:
+    """Extract contact information and assess concrete contact-related red flags."""
+    if not text:
+        return {'emails': [], 'phones': [], 'email_results': [],
+                'contact_indicators': [], 'contact_summary': []}
+
+    email_re = re.compile(
+        r'(?<![\w.+-])[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}(?![\w.-])',
+        re.IGNORECASE
+    )
+    phone_re = re.compile(r'(?<!\w)(?:\+?\d[\d\s().-]{7,18}\d)(?!\w)')
+
+    emails = list(dict.fromkeys(email_re.findall(text)))
+    phones = []
+    for raw in phone_re.findall(text):
+        compact = re.sub(r'\s+', ' ', raw).strip()
+        digits = re.sub(r'\D', '', compact)
+        if 8 <= len(digits) <= 15:
+            phones.append(compact)
+    phones = list(dict.fromkeys(phones))
+
+    email_results = []
+    contact_indicators = []
+    for email in emails[:8]:
+        try:
+            er = analyse_email_full(email)
+        except Exception as exc:
+            er = {'email': email, 'flags': [], 'risk': 'LOW', 'error': str(exc)}
+        email_results.append(er)
+        for flag in er.get('flags', []):
+            contact_indicators.append(f"Email {email}: {flag}")
+        if er.get('typosquat_detected'):
+            target = er.get('typosquat_target') or 'known brand'
+            contact_indicators.append(f"Email {email}: possible {target} impersonation in the domain")
+        if er.get('is_disposable'):
+            contact_indicators.append(f"Email {email}: disposable email domain detected")
+        if er.get('is_public_provider'):
+            contact_indicators.append(f"Email {email}: public/free-mail provider used")
+
+    # A phone number alone is not malicious. Flag it only when it appears in
+    # an explicit suspicious call/payment/verification context.
+    context = text.lower()
+    phone_context_terms = (
+        'call this number', 'call our', 'contact this number', 'contact us',
+        'send money', 'payment', 'refund', 'otp', 'verification',
+        'verify your account', 'urgent', 'immediately', 'fee'
+    )
+    if phones and any(term in context for term in phone_context_terms):
+        for phone in phones[:8]:
+            contact_indicators.append(
+                f"Phone {phone}: appears in a suspicious contact/payment context"
+            )
+
+    return {
+        'emails': emails[:8], 'phones': phones[:8], 'email_results': email_results,
+        'contact_indicators': list(dict.fromkeys(contact_indicators)),
+        'contact_summary': (
+            [f"{len(emails)} email address{'es' if len(emails) != 1 else ''} detected"] if emails else []
+        ) + (
+            [f"{len(phones)} phone number{'s' if len(phones) != 1 else ''} detected"] if phones else []
+        ),
+    }
+
+
+def _qr_related_indicators(text: str) -> list:
+    """Detect QR/payment instructions embedded in pasted text."""
+    lower = (text or '').lower()
+    phrases = [
+        'scan to receive', 'scan qr to receive', 'scan this qr',
+        'scan the qr code', 'qr code payment', 'qr to receive money',
+        'qr for refund', 'refund qr', 'scan and win', 'scan to claim',
+        'scan to unlock', 'malicious qr', 'qr code scam', 'qr code expired',
+        'update qr code', 'new qr code', 'receive payment scan',
+    ]
+    return [p for p in phrases if p in lower]
+
+
 def analyse_text(text: str) -> dict:
     if not text or not text.strip():
         return {'error': 'No text provided'}
 
-    lang_result   = detect_and_translate(text)
+    # Required pipeline: detect -> translate if supported/non-English ->
+    # analyse the resulting English text. The original-language text is not
+    # scored separately, so translated input follows exactly the English path.
+    lang_result = detect_and_translate(text)
     analysis_text = lang_result['translated_text']
 
-    ml_result    = ml_predict(analysis_text)
+    ml_result = ml_predict(analysis_text)
     ml_scam_prob = ml_result['probability']
     print("ML Scam Probability:", ml_scam_prob)
-    kw_translated = score_keywords(analysis_text)
-    kw_original   = score_keywords(lang_result['original_text'])
-    kw_result     = kw_translated if kw_translated['score'] >= kw_original['score'] else kw_original
-    kw_raw        = kw_result['score']
-    kw_norm       = normalise_score(kw_raw, ceiling=20.0)
+
+    kw_result = score_keywords(analysis_text)
+    kw_raw = kw_result['score']
+    kw_norm = normalise_score(kw_raw, ceiling=20.0)
 
     if kw_norm >= 60:
         ml_weight, kw_weight = 0.30, 0.70
@@ -100,21 +179,25 @@ def analyse_text(text: str) -> dict:
     blended = (ml_scam_prob * 100 * ml_weight) + (kw_norm * kw_weight)
     blended = min(round(blended, 1), 100.0)
 
-    # Zero-floor for completely safe text
     ML_SAFE_THRESHOLD = 15.0
-
     if kw_raw == 0 and (ml_scam_prob * 100) < ML_SAFE_THRESHOLD:
         blended = 0.0
-    
-    risk_info   = compute_risk_level(blended)
-    level       = risk_info['level']
-    confidence  = round(ml_result['confidence'] * 100, 1)
+
+    contacts = _extract_contact_info(analysis_text)
+    qr_indicators = _qr_related_indicators(analysis_text)
+    contact_flags = contacts['contact_indicators']
+    if contact_flags:
+        blended = min(100.0, round(blended + min(10.0, len(contact_flags) * 2.0), 1))
+
+    risk_info = compute_risk_level(blended)
+    level = risk_info['level']
+    confidence = round(ml_result['confidence'] * 100, 1)
 
     top_features = get_feature_importance(analysis_text, top_n=8)
     feature_words = [f[0] for f in top_features]
-
-    all_suspicious = list(set(kw_result['found'] + feature_words))[:12]
-
+    all_suspicious = list(dict.fromkeys(
+        kw_result['found'] + feature_words + qr_indicators + contact_flags
+    ))[:20]
     top_kw_hits = kw_result['found'][:4]
 
     if level == 'CRITICAL':
@@ -122,8 +205,7 @@ def analyse_text(text: str) -> dict:
             f"🚨 This content shows strong indicators of a scam or phishing attempt, "
             f"including: {', '.join(top_kw_hits)}. Do not act on any requests within it."
             if top_kw_hits else
-            "🚨 This content shows strong indicators of a scam or phishing attempt based on AI pattern analysis. "
-            "Do not act on any requests within it."
+            "🚨 This content shows strong indicators of a scam or phishing attempt based on AI pattern analysis. Do not act on any requests within it."
         )
     elif level == 'HIGH':
         verdict = (
@@ -140,38 +222,34 @@ def analyse_text(text: str) -> dict:
             "🧐 This content contains some suspicious elements worth investigating. Verify before taking any action."
         )
     elif level == 'LOW':
-        verdict = (
-            "🔵 Only minor risk factors were identified. This content appears largely legitimate "
-            "but still warrants basic verification."
-        )
+        verdict = "🔵 Only minor risk factors were identified. This content appears largely legitimate but still warrants basic verification."
     else:
         verdict = "✅ No major suspicious indicators were detected. This content appears to be safe."
 
     return {
-        'risk_score':       blended,
-        'confidence':       confidence,
-        'ml_probability':   round(ml_scam_prob * 100, 1),
-        'risk_level':       level,
-        'risk_color':       risk_info['color'],
-        'risk_emoji':       risk_info['emoji'],
-        'verdict':          verdict,
-        'suspicious_kws':   all_suspicious,
-        'keyword_hits':     kw_result['found'],
-        'recommendations':  get_recommendations(level),
-        'ml_label':         ml_result['label'],
-        'scan_type':        'Text Analysis',
-        'lang_code':        lang_result['lang_code'],
-        'lang_name':        lang_result['lang_name'],
-        'lang_native':      lang_result['native_name'],
-        'lang_flag':        lang_result['flag'],
-        'lang_confidence':  lang_result['confidence'],
-        'was_translated':   lang_result['was_translated'],
-        'translated_text':  lang_result['translated_text'],
-        'original_text':    lang_result['original_text'],
+        'risk_score': blended, 'confidence': confidence,
+        'ml_probability': round(ml_scam_prob * 100, 1),
+        'risk_level': level, 'risk_color': risk_info['color'],
+        'risk_emoji': risk_info['emoji'], 'verdict': verdict,
+        'suspicious_kws': all_suspicious, 'keyword_hits': kw_result['found'],
+        'recommendations': get_recommendations(level),
+        'ml_label': ml_result['label'], 'scan_type': 'Text Analysis',
+        'lang_code': lang_result['lang_code'], 'lang_name': lang_result['lang_name'],
+        'lang_native': lang_result['native_name'], 'lang_flag': lang_result['flag'],
+        'lang_confidence': lang_result['confidence'],
+        'was_translated': lang_result['was_translated'],
+        'translated_text': lang_result['translated_text'],
+        'original_text': lang_result['original_text'],
         'translation_method': lang_result['translation_method'],
         'translation_success': lang_result['translation_success'],
         'translation_error': lang_result.get('translation_error'),
+        'emails_detected': contacts['emails'], 'phones_detected': contacts['phones'],
+        'email_analysis': contacts['email_results'],
+        'contact_indicators': contact_flags, 'contact_summary': contacts['contact_summary'],
+        'qr_indicators': qr_indicators,
+        'analysis_input_language': ('English' if lang_result['lang_code'] == 'en' else ('English translation' if lang_result.get('translation_success') else 'Original text (translation unavailable)')),
     }
+
 
 # ─── URL detection inside free-form text (Requirement: TEXT ANALYSIS) ───────
 # Matches explicit schemes (http/https), "www."-prefixed hosts, and bare
@@ -261,7 +339,13 @@ def analyse_text_full(text: str, max_urls: int = 3) -> dict:
     """
     text_result = analyse_text(text)
 
-    urls_found = extract_urls_from_text(text)
+    # Find links in both the pasted source and the resulting English text.
+    # This prevents translation formatting from hiding a URL while keeping URL
+    # analysis as a separate full URL-scanner pipeline.
+    urls_found = list(dict.fromkeys(
+        extract_urls_from_text(text) +
+        extract_urls_from_text(text_result.get('translated_text', ''))
+    ))
     url_results = []
     for u in urls_found[:max_urls]:
         try:
