@@ -117,6 +117,20 @@ def analyse_text(text: str) -> dict:
 
     top_kw_hits = kw_result['found'][:4]
 
+    urls_in_text = (extract_urls_from_text(lang_result['original_text'])
+                     or extract_urls_from_text(analysis_text))
+    contact_info = (extract_contact_info(analysis_text)
+                     or extract_contact_info(lang_result['original_text']))
+
+    reduced = build_key_indicators(
+        kw_found=kw_result['found'],
+        urls_found=urls_in_text,
+        contact_info=contact_info,
+        level=level,
+    )
+    key_indicators = reduced['indicators']
+    why_suspicious = reduced['why']
+
     if level == 'CRITICAL':
         verdict = (
             f"🚨 This content shows strong indicators of a scam or phishing attempt, "
@@ -156,6 +170,8 @@ def analyse_text(text: str) -> dict:
         'risk_emoji':       risk_info['emoji'],
         'verdict':          verdict,
         'suspicious_kws':   all_suspicious,
+        'key_indicators':   key_indicators,
+        'why_suspicious':   why_suspicious,
         'keyword_hits':     kw_result['found'],
         'recommendations':  get_recommendations(level),
         'ml_label':         ml_result['label'],
@@ -237,6 +253,111 @@ def extract_urls_from_text(text: str) -> list:
             urls.append(normalised)
 
     return urls
+
+
+# ─── Contact-info extraction (phone / email) inside free text ──────────────
+_PHONE_RE = re.compile(
+    r'(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{3,4}\b'
+)
+_EMAIL_FINDALL_RE = re.compile(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}')
+
+
+def extract_contact_info(text: str) -> dict:
+    """Pull out phone numbers and email addresses mentioned in *text* so
+    they can feed into the overall suspicious-content analysis rather than
+    being ignored."""
+    if not text:
+        return {'phones': [], 'emails': []}
+
+    emails = list(dict.fromkeys(_EMAIL_FINDALL_RE.findall(text)))
+    text_no_emails = _EMAIL_FINDALL_RE.sub(' ', text)
+    phones = []
+    for m in _PHONE_RE.findall(text_no_emails):
+        digits = re.sub(r'\D', '', m)
+        if 7 <= len(digits) <= 13 and m.strip() not in phones:
+            phones.append(m.strip())
+
+    return {'phones': phones[:5], 'emails': emails[:5]}
+
+
+# ─── Reduce every raw signal down to a small, human-readable indicator set ──
+# Requirement: analyse everything internally (keywords, URLs, phone/email,
+# OTP/PIN requests, urgency language, payment requests, etc.) but only ever
+# surface a handful of the *most important*, de-duplicated, plain-language
+# indicators to the user — full detail stays available internally for
+# scoring/explanation.
+_INDICATOR_CATEGORIES = [
+    # (priority, matcher keywords, indicator label, explanation sentence)
+    (100, ['otp', 'one time password', 'share your otp', 'upi pin', 'password', 'pin '],
+     'Request for OTP/PIN or sensitive information',
+     'It requests sensitive information such as an OTP, PIN, or password.'),
+    (95, ['bank details', 'bank account', 'send bank details', 'account number',
+          'upi id', 'bhim upi'],
+     'Requests banking or payment details',
+     'It asks for banking or payment account details.'),
+    (90, ['fee', 'deposit', 'registration fee', 'processing fee', 'joining fee',
+          'payment required', 'pay to', 'advance payment'],
+     'Payment or fee request',
+     'It asks you to pay a fee or make a payment upfront.'),
+    (85, ['account blocked', 'account suspended', 'account will be closed',
+          'kyc', 'account has been suspended', 'blocked'],
+     'Urgent account threat/suspension warning',
+     'It threatens that your account will be blocked or suspended.'),
+    (80, ['urgent', 'immediately', 'act now', 'limited time', 'act fast',
+          'expires', 'expired', 'within 24 hours'],
+     'Creates urgency and pressures immediate action',
+     'It creates urgency and pressures you to act immediately.'),
+    (75, ['lottery', 'you have won', "you've won", 'claim your prize',
+          'free gift', 'winner', 'jackpot', 'free iphone'],
+     'Too-good-to-be-true prize or offer claim',
+     'It makes an unrealistic prize or reward claim.'),
+    (70, ['click here', 'verify your account', 'verify account', 'confirm your identity'],
+     'Suspicious verification/click-through request',
+     'It pushes you to click a link to "verify" or "confirm" something.'),
+    (60, ['guaranteed', 'no interview', 'no experience', 'work from home earning'],
+     'Unrealistic job/earning guarantee',
+     'It promises an unrealistic guaranteed job or earning outcome.'),
+]
+
+
+def build_key_indicators(kw_found: dict, urls_found: list, contact_info: dict, level: str) -> dict:
+    """
+    Collapse every raw detection into a short, prioritised, de-duplicated
+    list of user-facing indicators (+ matching plain-language explanations).
+
+    kw_found:      {keyword: weight} from score_keywords()
+    urls_found:    list of URLs pulled from the text
+    contact_info:  {'phones': [...], 'emails': [...]}
+    level:         risk level string, used to gate low-signal noise
+    """
+    found_lower = set(k.lower() for k in kw_found.keys())
+    picked = []  # (priority, label, explanation)
+
+    for priority, matchers, label, explanation in _INDICATOR_CATEGORIES:
+        if any(m in found_lower or any(m in k for k in found_lower) for m in matchers):
+            picked.append((priority, label, explanation))
+
+    if urls_found:
+        picked.append((65, 'Suspicious URL included', 'The included link appears suspicious.'))
+
+    if level in ('CRITICAL', 'HIGH', 'MEDIUM') and (contact_info.get('phones') or contact_info.get('emails')):
+        picked.append((40, 'Unverified contact information provided',
+                        'It provides contact details that cannot be independently verified.'))
+
+    # De-dupe by label, keep highest priority, sort, cap to top 4
+    best = {}
+    for priority, label, explanation in picked:
+        if label not in best or priority > best[label][0]:
+            best[label] = (priority, explanation)
+
+    ranked = sorted(best.items(), key=lambda kv: kv[1][0], reverse=True)[:4]
+
+    if not ranked:
+        return {'indicators': [], 'why': []}
+
+    indicators = [label for label, _ in ranked]
+    why = [expl for _, (_, expl) in ranked]
+    return {'indicators': indicators, 'why': why}
 
 
 def analyse_text_full(text: str, max_urls: int = 3) -> dict:

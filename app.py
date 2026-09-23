@@ -453,7 +453,8 @@ def render_full_result(result: dict) -> None:
     emoji  = result.get("risk_emoji", "🟢")
     verdict_text = result.get("verdict", "No verdict available.")
     recs   = result.get("recommendations", [])
-    kws    = result.get("suspicious_kws", [])
+    kws    = result.get("key_indicators") or result.get("suspicious_kws", [])[:4]
+    why_list = result.get("why_suspicious", [])
 
     # color palette by level
     level_meta = {
@@ -471,9 +472,16 @@ def render_full_result(result: dict) -> None:
 
     # Build HTML fragments used inside the big f-string below
     if kws:
-        kw_chips_html = "".join(f'<span class="kw-chip">{kw}</span>' for kw in kws[:12])
+        kw_chips_html = "".join(f'<span class="kw-chip">{kw}</span>' for kw in kws[:5])
     else:
         kw_chips_html = '<span style="color:#5a7a9a;font-size:0.82rem;font-family:monospace">No suspicious keywords detected.</span>'
+
+    if why_list:
+        why_html = '<div class="section-hdr" style="margin-top:1rem">❓ Why This May Be Suspicious</div>' \
+                   '<div style="margin-top:.25rem;line-height:1.9;color:var(--text);font-size:0.88rem">' \
+                   + "".join(f'<div>• {w}</div>' for w in why_list) + '</div>'
+    else:
+        why_html = ''
 
     rec_html = "".join(
         f'<div class="rec-item" style="animation-delay:{i*0.07}s">{rec}</div>'
@@ -748,6 +756,8 @@ def render_full_result(result: dict) -> None:
   <!-- Suspicious Indicators -->
   <div class="section-hdr">⚡ Suspicious Indicators</div>
   <div style="line-height:2.4;margin-top:.25rem">{kw_chips_html}</div>
+
+  {why_html}
 
   {url_details_html}
 
@@ -2094,7 +2104,7 @@ elif selected == "About":
                     filter:drop-shadow(0 0 25px rgba(0,212,255,0.5));
                     animation:iconFloat 4s ease-in-out infinite;display:inline-block">🛡️</div>
         <div class="cyber-title" style="margin-bottom:0.75rem">Defending Users Against<br>Digital Threats</div>
-        <div class="cyber-subtitle">An AI-powered platform built to protect job seekers and everyday users from online scams</div>
+        <div class="cyber-subtitle">An AI-powered platform built to protect everyday users from online scams</div>
     </div>
     ''')
     H('<div class="cyber-divider"></div>')
@@ -2102,13 +2112,14 @@ elif selected == "About":
     section_header("What CyberLens Protects Against", "🎯")
     st.write("")
     protect_items = [
-        ("💼", "Fake Jobs",       "Fraudulent internship\nand job postings"),
-        ("🔗", "Phishing Links",  "Malicious URLs designed\nto steal credentials"),
-        ("📷", "QR Scams",        "QR codes redirecting\nto fraud sites"),
-        ("👤", "Fake Recruiters", "Impersonated HR &\nrecruiter identities"),
-        ("📄", "Fraud PDFs",      "Documents with embedded\nmalicious payloads"),
+        ("💼", "Fake Jobs",         "Fraudulent internship\nand job postings"),
+        ("🧠", "Smart Threat Scan", "Analyzes messages for\nhidden scam patterns"),
+        ("🔗", "Phishing Links",    "Malicious URLs designed\nto steal credentials"),
+        ("📷", "QR Scams",          "QR codes redirecting\nto fraud sites"),
+        ("👤", "Fake Recruiters",   "Impersonated HR &\nrecruiter identities"),
+        ("📄", "Fraud PDFs",        "Documents with embedded\nmalicious payloads"),
     ]
-    pcols = st.columns(5)
+    pcols = st.columns(6)
     for col, (icon, title, desc) in zip(pcols, protect_items):
         with col:
             H(f'''
@@ -2160,12 +2171,13 @@ elif selected == "About":
                     margin-bottom:1rem">The Problem Is Real</div>
         <div style="font-size:1rem;color:var(--text);line-height:1.9;max-width:680px;
                     margin:0 auto;font-family:var(--font-body)">
-            Thousands of students and job seekers lose money to online scams every single day.
-            Fake internship offers, phishing emails, and fraudulent recruiters target vulnerable people
-            who simply want a better future.<br><br>
-            <strong style="color:var(--primary)">CyberLens AI was built to help identify suspicious digital threats
-            before victims are harmed</strong> — combining machine learning, NLP, and cybersecurity heuristics
-            into an accessible, real-time intelligence platform.
+            Online scams are becoming increasingly sophisticated, targeting people through
+            suspicious messages, phishing links, fake websites, QR codes, images, documents,
+            and other digital channels.<br><br>
+            <strong style="color:var(--primary)">CyberLens AI was built to help identify suspicious
+            digital threats before they can cause harm</strong> — combining machine learning,
+            natural language processing, OCR, URL analysis, and cybersecurity heuristics
+            into an accessible, real-time threat detection platform.
         </div>
     </div>
     ''')
