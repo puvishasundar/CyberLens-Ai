@@ -29,7 +29,8 @@ from utils import (
     score_keywords, compute_risk_level, normalise_score,
     analyse_url, analyse_recruiter_email, analyse_company_name,
     analyse_email_full, verify_company_identity, _domain_core,
-    SCAM_KEYWORDS, SHORTENER_DOMAINS
+    SCAM_KEYWORDS, SHORTENER_DOMAINS,
+    PUBLIC_EMAIL_PROVIDERS, DISPOSABLE_EMAIL_DOMAINS, detect_domain_typosquat,
 )
 from ml_model import predict as ml_predict, get_feature_importance
 from url_model import predict_url as url_ml_predict, get_feature_importance_url
@@ -74,21 +75,33 @@ _RECS = {
 def get_recommendations(level: str) -> list:
     return _RECS.get(level, _RECS['SAFE'])
 
+
 def analyse_text(text: str) -> dict:
     if not text or not text.strip():
         return {'error': 'No text provided'}
 
+    # ── Requirements 1 & 2: detect language → translate non-English ────────
+    # detect_and_translate() handles: English → passthrough;
+    # ta/te/ml/kn/hi/es → full English translation (chunked for long texts);
+    # total translation failure → original returned so analysis still runs.
     lang_result   = detect_and_translate(text)
-    analysis_text = lang_result['translated_text']
+    analysis_text = lang_result['translated_text']   # English, or original if en/failed
+    original_text = lang_result['original_text']
 
     ml_result    = ml_predict(analysis_text)
     ml_scam_prob = ml_result['probability']
     print("ML Scam Probability:", ml_scam_prob)
-    kw_translated = score_keywords(analysis_text)
-    kw_original   = score_keywords(lang_result['original_text'])
-    kw_result     = kw_translated if kw_translated['score'] >= kw_original['score'] else kw_original
-    kw_raw        = kw_result['score']
-    kw_norm       = normalise_score(kw_raw, ceiling=20.0)
+    logger.info("[Text] lang=%s translated=%s via=%s ml_prob=%.4f",
+                lang_result['lang_code'], lang_result['was_translated'],
+                lang_result['translation_method'], ml_scam_prob)
+
+    # ── Requirements 2/4/5: the English translation is THE input to the exact
+    # same analysis used for English text. The original-language text is no
+    # longer scored separately. If translation failed, translated_text IS the
+    # original text, so the suspicious-content analysis is never skipped. ───
+    kw_result = score_keywords(analysis_text)
+    kw_raw    = kw_result['score']
+    kw_norm   = normalise_score(kw_raw, ceiling=20.0)
 
     if kw_norm >= 60:
         ml_weight, kw_weight = 0.30, 0.70
@@ -100,36 +113,41 @@ def analyse_text(text: str) -> dict:
     blended = (ml_scam_prob * 100 * ml_weight) + (kw_norm * kw_weight)
     blended = min(round(blended, 1), 100.0)
 
-    # Zero-floor for completely safe text
+    # ── Requirement 3: unified suspicious indicators across the WHOLE
+    # content — main text, embedded URLs, QR/UPI payloads, email addresses
+    # and phone numbers — pulled from BOTH the original and the translated
+    # text (links are never translated, and translators sometimes mangle
+    # or drop them). ────────────────────────────────────────────────────────
+    signals         = _extract_contact_signals(original_text, analysis_text)
+    text_indicators = _build_text_indicators(signals, kw_result['found'], analysis_text)
+
+    indicator_bonus = 0   # display-only default — keeps scoring untouched
+    # ── OPTIONAL but recommended: let hard signals (UPI/QR payment payload,
+    # masked/shortened link, disposable or lookalike email domain) feed the
+    # score, capped at +40. Applied IDENTICALLY to English input and to the
+    # English translation of non-English input. Delete just this block if
+    # you want indicators to be display-only. ──────────────────────────────
+    _SEV_BONUS = {'critical': 25, 'high': 12, 'medium': 4, 'low': 0}
+    indicator_bonus = min(sum(_SEV_BONUS.get(i.get('severity'), 0)
+                              for i in text_indicators), 40)
+    if indicator_bonus:
+        blended = min(round(blended + indicator_bonus, 1), 100.0)
+
+    # Zero-floor for completely safe text — structured indicators still count,
+    # so a detected payment payload / masked link is never silently erased.
     ML_SAFE_THRESHOLD = 15.0
-
     if kw_raw == 0 and (ml_scam_prob * 100) < ML_SAFE_THRESHOLD:
-        blended = 0.0
-    
-    risk_info   = compute_risk_level(blended)
-    level       = risk_info['level']
-    confidence  = round(ml_result['confidence'] * 100, 1)
+        blended = min(float(indicator_bonus), 100.0)
 
-    top_features = get_feature_importance(text, top_n=8)
+    risk_info  = compute_risk_level(blended)
+    level      = risk_info['level']
+    confidence = round(ml_result['confidence'] * 100, 1)
+
+    top_features  = get_feature_importance(analysis_text, top_n=8)
     feature_words = [f[0] for f in top_features]
 
     all_suspicious = list(set(kw_result['found'] + feature_words))[:12]
-
-    top_kw_hits = kw_result['found'][:4]
-
-    urls_in_text = (extract_urls_from_text(lang_result['original_text'])
-                     or extract_urls_from_text(analysis_text))
-    contact_info = (extract_contact_info(analysis_text)
-                     or extract_contact_info(lang_result['original_text']))
-
-    reduced = build_key_indicators(
-        kw_found=kw_result['found'],
-        urls_found=urls_in_text,
-        contact_info=contact_info,
-        level=level,
-    )
-    key_indicators = reduced['indicators']
-    why_suspicious = reduced['why']
+    top_kw_hits    = kw_result['found'][:4]
 
     if level == 'CRITICAL':
         verdict = (
@@ -161,6 +179,16 @@ def analyse_text(text: str) -> dict:
     else:
         verdict = "✅ No major suspicious indicators were detected. This content appears to be safe."
 
+    # Requirement 3: surface non-keyword detections in the verdict itself
+    extra_parts = []
+    if signals['payment_uris']: extra_parts.append('a UPI/QR payment payload')
+    if signals['urls']:         extra_parts.append(f"{len(signals['urls'])} embedded link(s)")
+    if signals['emails']:       extra_parts.append('embedded email address(es)')
+    if signals['phones']:       extra_parts.append('phone number(s) to contact')
+    if extra_parts and level != 'SAFE':
+        verdict += (" The content also contains " + ", ".join(extra_parts) +
+                    " — see the suspicious indicators for details.")
+
     return {
         'risk_score':       blended,
         'confidence':       confidence,
@@ -170,12 +198,11 @@ def analyse_text(text: str) -> dict:
         'risk_emoji':       risk_info['emoji'],
         'verdict':          verdict,
         'suspicious_kws':   all_suspicious,
-        'key_indicators':   key_indicators,
-        'why_suspicious':   why_suspicious,
         'keyword_hits':     kw_result['found'],
         'recommendations':  get_recommendations(level),
         'ml_label':         ml_result['label'],
         'scan_type':        'Text Analysis',
+        # language / translation (existing keys — UI depends on them)
         'lang_code':        lang_result['lang_code'],
         'lang_name':        lang_result['lang_name'],
         'lang_native':      lang_result['native_name'],
@@ -187,6 +214,14 @@ def analyse_text(text: str) -> dict:
         'translation_method': lang_result['translation_method'],
         'translation_success': lang_result['translation_success'],
         'translation_error': lang_result.get('translation_error'),
+        # NEW — unified indicators + extracted signals
+        'text_indicators':  text_indicators,
+        'urls_found':       signals['urls'],
+        'contact_info': {
+            'emails':       signals['emails'],
+            'phones':       signals['phones'],
+            'payment_uris': signals['payment_uris'],
+        },
     }
 
 # ─── URL detection inside free-form text (Requirement: TEXT ANALYSIS) ───────
@@ -255,113 +290,155 @@ def extract_urls_from_text(text: str) -> list:
     return urls
 
 
-# ─── Contact-info extraction (phone / email) inside free text ──────────────
-_PHONE_RE = re.compile(
-    r'(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?)?\d{3,4}[-.\s]?\d{3,4}\b'
+# ─── Contact-info & QR-payment-payload extraction (Requirement 3) ──────────
+# The Text Analyzer must check EVERY relevant part of the content: main
+# text, URLs/links, QR-code payloads, contact information, phone numbers,
+# email addresses and other suspicious elements — not just keywords.
+
+_PHONE_CAND_RE = re.compile(r'\+?\d[\d \t\-().]{7,16}\d')
+
+# QR codes pasted as text encode payloads like 'upi://pay?pa=...&am=5000'
+# (the classic collect-request scam QR) or crypto payment URIs.
+_QR_PAYLOAD_RE = re.compile(
+    r'\bupi://[^\s<>"\')]+'
+    r'|\b(?:bitcoin|ethereum|bitcoincash):[^\s<>"\')]+',
+    re.IGNORECASE,
 )
-_EMAIL_FINDALL_RE = re.compile(r'[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}')
 
 
-def extract_contact_info(text: str) -> dict:
-    """Pull out phone numbers and email addresses mentioned in *text* so
-    they can feed into the overall suspicious-content analysis rather than
-    being ignored."""
-    if not text:
-        return {'phones': [], 'emails': []}
-
-    emails = list(dict.fromkeys(_EMAIL_FINDALL_RE.findall(text)))
-    text_no_emails = _EMAIL_FINDALL_RE.sub(' ', text)
-    phones = []
-    for m in _PHONE_RE.findall(text_no_emails):
-        digits = re.sub(r'\D', '', m)
-        if 7 <= len(digits) <= 13 and m.strip() not in phones:
-            phones.append(m.strip())
-
-    return {'phones': phones[:5], 'emails': emails[:5]}
-
-
-# ─── Reduce every raw signal down to a small, human-readable indicator set ──
-# Requirement: analyse everything internally (keywords, URLs, phone/email,
-# OTP/PIN requests, urgency language, payment requests, etc.) but only ever
-# surface a handful of the *most important*, de-duplicated, plain-language
-# indicators to the user — full detail stays available internally for
-# scoring/explanation.
-_INDICATOR_CATEGORIES = [
-    # (priority, matcher keywords, indicator label, explanation sentence)
-    (100, ['otp', 'one time password', 'share your otp', 'upi pin', 'password', 'pin '],
-     'Request for OTP/PIN or sensitive information',
-     'It requests sensitive information such as an OTP, PIN, or password.'),
-    (95, ['bank details', 'bank account', 'send bank details', 'account number',
-          'upi id', 'bhim upi'],
-     'Requests banking or payment details',
-     'It asks for banking or payment account details.'),
-    (90, ['fee', 'deposit', 'registration fee', 'processing fee', 'joining fee',
-          'payment required', 'pay to', 'advance payment'],
-     'Payment or fee request',
-     'It asks you to pay a fee or make a payment upfront.'),
-    (85, ['account blocked', 'account suspended', 'account will be closed',
-          'kyc', 'account has been suspended', 'blocked'],
-     'Urgent account threat/suspension warning',
-     'It threatens that your account will be blocked or suspended.'),
-    (80, ['urgent', 'immediately', 'act now', 'limited time', 'act fast',
-          'expires', 'expired', 'within 24 hours'],
-     'Creates urgency and pressures immediate action',
-     'It creates urgency and pressures you to act immediately.'),
-    (75, ['lottery', 'you have won', "you've won", 'claim your prize',
-          'free gift', 'winner', 'jackpot', 'free iphone'],
-     'Too-good-to-be-true prize or offer claim',
-     'It makes an unrealistic prize or reward claim.'),
-    (70, ['click here', 'verify your account', 'verify account', 'confirm your identity'],
-     'Suspicious verification/click-through request',
-     'It pushes you to click a link to "verify" or "confirm" something.'),
-    (60, ['guaranteed', 'no interview', 'no experience', 'work from home earning'],
-     'Unrealistic job/earning guarantee',
-     'It promises an unrealistic guaranteed job or earning outcome.'),
-]
-
-
-def build_key_indicators(kw_found, urls_found: list, contact_info: dict, level: str) -> dict:
+def _extract_phones(text: str) -> list:
     """
-    Collapse every raw detection into a short, prioritised, de-duplicated
-    list of user-facing indicators (+ matching plain-language explanations).
-
-    kw_found:      list of matched keyword strings from score_keywords()['found']
-                    (also accepts a {keyword: weight} dict for safety)
-    urls_found:    list of URLs pulled from the text
-    contact_info:  {'phones': [...], 'emails': [...]}
-    level:         risk level string, used to gate low-signal noise
+    Plausible phone numbers found in *text* (Indian 10-digit mobiles with
+    optional +91, plus generic international formats), de-duplicated in
+    first-seen order. Pure-digit noise — version numbers, prices, OTPs,
+    dates — is rejected by the length/prefix validation below.
     """
-    if isinstance(kw_found, dict):
-        found_lower = set(k.lower() for k in kw_found.keys())
-    else:
-        found_lower = set(k.lower() for k in kw_found)
-    picked = []  # (priority, label, explanation)
+    phones, seen = [], set()
+    for raw in _PHONE_CAND_RE.findall(text or ''):
+        digits = re.sub(r'\D', '', raw)
+        has_plus = raw.lstrip().startswith('+')
+        if len(digits) == 12 and digits.startswith('91'):
+            digits = digits[2:]                          # +91 → 10-digit Indian
+        ok = (len(digits) == 10 and digits[0] in '6789')      # Indian mobile
+        ok = ok or (has_plus and 10 <= len(digits) <= 15)     # +country format
+        ok = ok or (len(digits) == 11 and digits[0] == '0')   # landline style
+        if not ok or digits in seen:
+            continue
+        seen.add(digits)
+        phones.append(raw.strip())
+    return phones
 
-    for priority, matchers, label, explanation in _INDICATOR_CATEGORIES:
-        if any(m in found_lower or any(m in k for k in found_lower) for m in matchers):
-            picked.append((priority, label, explanation))
 
-    if urls_found:
-        picked.append((65, 'Suspicious URL included', 'The included link appears suspicious.'))
+def _extract_contact_signals(original_text: str, analysis_text: str) -> dict:
+    """
+    Pull URLs, emails, phone numbers and QR/UPI payment payloads from BOTH
+    the original-language text and the English translation (links are never
+    translated, and translators occasionally mangle or drop them), then
+    de-duplicate everything in first-seen order.
+    """
+    return {
+        'urls':         list(dict.fromkeys(extract_urls_from_text(original_text) +
+                                           extract_urls_from_text(analysis_text))),
+        'emails':       list(dict.fromkeys(_EMAIL_INLINE_RE.findall(original_text) +
+                                           _EMAIL_INLINE_RE.findall(analysis_text))),
+        'phones':       list(dict.fromkeys(_extract_phones(original_text) +
+                                           _extract_phones(analysis_text))),
+        'payment_uris': list(dict.fromkeys(_QR_PAYLOAD_RE.findall(original_text) +
+                                           _QR_PAYLOAD_RE.findall(analysis_text))),
+    }
 
-    if level in ('CRITICAL', 'HIGH', 'MEDIUM') and (contact_info.get('phones') or contact_info.get('emails')):
-        picked.append((40, 'Unverified contact information provided',
-                        'It provides contact details that cannot be independently verified.'))
 
-    # De-dupe by label, keep highest priority, sort, cap to top 4
-    best = {}
-    for priority, label, explanation in picked:
-        if label not in best or priority > best[label][0]:
-            best[label] = (priority, explanation)
+def _build_text_indicators(signals: dict, kw_hits: list, analysis_text: str) -> list:
+    """
+    Requirement 3: build ONE unified list of suspicious indicators covering
+    the main text, embedded URLs, QR/UPI payloads, email addresses and phone
+    numbers. Every entry explains WHAT was detected and WHY it may be
+    suspicious, so the UI can render a consistent explanation across all
+    parts of the content.
+    """
+    indicators = []
+    text_lower = analysis_text.lower()
 
-    ranked = sorted(best.items(), key=lambda kv: kv[1][0], reverse=True)[:4]
+    # 1 ── Scam keywords / phrases (scored on the English translation)
+    if kw_hits:
+        indicators.append({
+            'category': 'Scam Keywords',
+            'icon': '🧩',
+            'item': ', '.join(kw_hits[:5]) + (' …' if len(kw_hits) > 5 else ''),
+            'why': ('These words/phrases match known scam and social-engineering '
+                    'language: urgency pressure, fee demands, credential/OTP requests, '
+                    'fake offers or authority impersonation.'),
+            'severity': 'high' if len(kw_hits) >= 3 else 'medium',
+        })
 
-    if not ranked:
-        return {'indicators': [], 'why': []}
+    # 2 ── Embedded URLs / links
+    for u in signals['urls']:
+        is_short = any(sd in u.lower() for sd in SHORTENER_DOMAINS)
+        indicators.append({
+            'category': 'Embedded Link',
+            'icon': '🔗',
+            'item': u,
+            'why': ('Shortened/masked link — hides its real destination, a classic '
+                    'phishing technique. See the full URL analysis below.' if is_short else
+                    'The message contains a link. Scam messages often lead to fake '
+                    'login, payment or "verification" pages. See the URL analysis below.'),
+            'severity': 'high' if is_short else 'medium',
+        })
 
-    indicators = [label for label, _ in ranked]
-    why = [expl for _, (_, expl) in ranked]
-    return {'indicators': indicators, 'why': why}
+    # 3 ── QR-code style payment payloads (what most scam QR codes encode)
+    for u in signals['payment_uris']:
+        indicators.append({
+            'category': 'QR / Payment Payload',
+            'icon': '📱',
+            'item': u[:90],
+            'why': ('UPI/crypto payment URI — the exact payload encoded by many scam '
+                    'QR codes. Scanning or approving it sends money to the fraudster, '
+                    'often disguised as a "receive/refund" request.'),
+            'severity': 'critical',
+        })
+
+    # 4 ── Email addresses (contact info)
+    for e in signals['emails']:
+        domain = e.split('@')[-1].lower()
+        if domain in DISPOSABLE_EMAIL_DOMAINS:
+            ind = {'severity': 'high',
+                   'why': f'Disposable/temporary email domain ("{domain}") — commonly '
+                          'used by scammers to stay untraceable.'}
+        elif domain in PUBLIC_EMAIL_PROVIDERS:
+            ind = {'severity': 'medium',
+                   'why': f'Free public email provider ("{domain}"). Legitimate companies '
+                          'use their own corporate domain — a "recruiter" or "bank '
+                          'official" on free mail is a classic red flag.'}
+        else:
+            typo = detect_domain_typosquat(domain)
+            if typo['detected']:
+                ind = {'severity': 'high',
+                       'why': f'Domain appears to impersonate "{typo["target"]}" '
+                              '(typosquatting / lookalike domain).'}
+            else:
+                ind = {'severity': 'low',
+                       'why': 'Reply-to email present. Verify the domain really belongs '
+                              'to the claimed organisation before responding.'}
+        indicators.append({'category': 'Email Address', 'icon': '📧', 'item': e, **ind})
+
+    # 5 ── Phone numbers (contact info)
+    asks_to_contact = any(w in text_lower for w in
+                          ('call ', 'whatsapp', 'contact ', 'helpline', 'telegram'))
+    for p in signals['phones']:
+        indicators.append({
+            'category': 'Phone Number',
+            'icon': '📞',
+            'item': p,
+            'why': ('The message directs you to call / WhatsApp a number — moving '
+                    'victims to a private phone or WhatsApp chat is a hallmark of '
+                    'fake customer-care, "WhatsApp HR" and digital-arrest scams.'
+                    if asks_to_contact else
+                    'A phone number is embedded in the message. Scam messages often '
+                    'move victims off-platform to a phone/WhatsApp conversation.'),
+            'severity': 'medium' if asks_to_contact else 'low',
+        })
+
+    return indicators
 
 
 def analyse_text_full(text: str, max_urls: int = 3) -> dict:
@@ -369,11 +446,16 @@ def analyse_text_full(text: str, max_urls: int = 3) -> dict:
     Orchestrator for the Text Analysis module.
 
     Requirement: if the pasted text contains one or more URLs, run BOTH
-    Text Analysis (on the full message) and full URL Analysis (on each
-    embedded link -- website content extraction, threat score, scam
-    explanation, suspicious indicators, extracted website text), then
-    return everything needed to display a single combined report,
-    without the user having to switch modules.
+    Text Analysis (on the full message — translated to English first when
+    the input is non-English) and full URL Analysis (on each embedded
+    link — website content extraction, threat score, scam explanation,
+    suspicious indicators, extracted website text), then return everything
+    needed to display a single combined report, without the user having
+    to switch modules.
+
+    The URL list is reused from analyse_text(), which already pulled links
+    from BOTH the original and the translated text — so the indicator list
+    and the URL result cards always agree.
 
     Returns:
         {
@@ -386,7 +468,8 @@ def analyse_text_full(text: str, max_urls: int = 3) -> dict:
     """
     text_result = analyse_text(text)
 
-    urls_found = extract_urls_from_text(text)
+    # Reuse the union of URLs extracted from original + translated text.
+    urls_found = text_result.get('urls_found') or extract_urls_from_text(text)
     url_results = []
     for u in urls_found[:max_urls]:
         try:
@@ -406,6 +489,20 @@ def analyse_text_full(text: str, max_urls: int = 3) -> dict:
         'scan_type':    'Text Analysis',
     }
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ⛔ STOP — EVERYTHING BELOW THIS POINT IS UNCHANGED.
+# Keep YOUR existing analyzer.py exactly as it is, starting from the line:
+#
+#     SCAM_CONTENT_PHRASES = [
+#
+# all the way to the end of the file (SCAM_CONTENT_PHRASES, _BOILERPLATE_TAGS,
+# _NAV_JUNK, _extract_visible_text, fetch_via_playwright,
+# analyse_webpage_content, analyse_url_full, detect_qr_content_type,
+# _deskew_image, _enhance_image_for_ocr, analyse_qr, analyse_ocr_image,
+# analyse_pdf, analyse_company, and anything else in your file).
+# None of that code is modified by this update.
+# ═════════════════════════════════════════════════════════════════════════════
 
 SCAM_CONTENT_PHRASES = [
     "congratulations! you won", "congratulations, you won", "you have won",

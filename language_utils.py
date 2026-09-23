@@ -15,11 +15,7 @@
 
 import re
 import unicodedata
-import logging
 import streamlit as st
-
-logger = logging.getLogger("cyberlens.language_utils")
-
 
 # ─── Language Metadata ──────────────────────────────────────────────────────────
 
@@ -159,92 +155,79 @@ def detect_language(text: str) -> dict:
 
 
 # ─── Translation ───────────────────────────────────────────────────────────────
-
 def translate_to_english(text: str, src_lang: str) -> dict:
-    """
-    Translate *text* from *src_lang* to English.
+    """Translate supported non-English text to English."""
 
-    Tries two independent, zero-key backends in order — deep-translator's
-    GoogleTranslator, then the googletrans library — so a hiccup/outage in
-    one doesn't take translation down entirely. Every failure is logged
-    (visible in `streamlit run` console output / Streamlit Cloud "Manage
-    app" logs) so a silent passthrough can actually be diagnosed instead of
-    just quietly returning the original text.
-
-    Returns:
-        {
-          'translated_text': str,   # English text (or original if failed)
-          'success':         bool,
-          'method':          str,   # 'deep_translator' | 'googletrans' | 'passthrough'
-          'error':           str | None,
-        }
-    """
-    if src_lang == 'en':
+    if src_lang == "en":
         return {
-            'translated_text': text,
-            'success': True,
-            'method': 'passthrough',
-            'error': None,
+            "translated_text": text,
+            "success": True,
+            "method": "passthrough",
+            "error": None,
         }
 
-    errors = []
-
-    # 1️⃣  deep-translator (GoogleTranslator)
+    # Try googletrans
     try:
-        from deep_translator import GoogleTranslator
-        translated = GoogleTranslator(source=src_lang, target='en').translate(text)
+        from googletrans import Translator
+
+        translator = Translator()
+        result = translator.translate(
+            text,
+            src=src_lang,
+            dest="en"
+        )
+
+        translated = result.text
+
         if translated and translated.strip():
             return {
-                'translated_text': translated,
-                'success': True,
-                'method': 'deep_translator',
-                'error': None,
+                "translated_text": translated,
+                "success": True,
+                "method": "googletrans",
+                "error": None,
             }
-        errors.append('deep_translator: returned empty result')
-    except ModuleNotFoundError as e:
-        msg = f'deep_translator: package not installed ({e})'
-        logger.warning(msg)
-        errors.append(msg)
-    except Exception as e:
-        msg = f'deep_translator: {type(e).__name__}: {e}'
-        logger.warning(msg)
-        errors.append(msg)
 
-    # 2️⃣  googletrans (fallback — different HTTP path/package, so it can
-    # succeed even when deep-translator's endpoint is rate-limited/blocked)
+    except Exception as e:
+        google_error = str(e)
+
+    # Try deep-translator
     try:
-        from googletrans import Translator as _GTranslator
-        _gt = _GTranslator()
-        gt_result = _gt.translate(text, src=src_lang, dest='en')
-        translated = getattr(gt_result, 'text', None)
+        from deep_translator import MyMemoryTranslator
+
+        MYMEMORY_CODES = {
+            'ta': 'ta-IN',   # Tamil
+            'te': 'te-IN',   # Telugu
+            'ml': 'ml-IN',   # Malayalam
+            'kn': 'kn-IN',   # Kannada
+            'hi': 'hi-IN',   # Hindi
+            'es': 'es-ES',   # Spanish
+        }
+
+        source_code = MYMEMORY_CODES.get(src_lang, src_lang)
+
+        translated = MyMemoryTranslator(
+            source=source_code,
+            target='en-GB'
+        ).translate(text)
+
         if translated and translated.strip():
             return {
-                'translated_text': translated,
-                'success': True,
-                'method': 'googletrans',
-                'error': None,
+                "translated_text": translated,
+                "success": True,
+                "method": "deep_translator",
+                "error": None,
             }
-        errors.append('googletrans: returned empty result')
-    except ModuleNotFoundError as e:
-        msg = f'googletrans: package not installed ({e})'
-        logger.warning(msg)
-        errors.append(msg)
-    except Exception as e:
-        msg = f'googletrans: {type(e).__name__}: {e}'
-        logger.warning(msg)
-        errors.append(msg)
 
-    # 3️⃣  Passthrough — every backend unavailable/failed, return original
-    combined_error = '; '.join(errors) if errors else \
-        'Translation backends unavailable. Install deep-translator or googletrans.'
-    logger.error("Translation failed for src_lang=%r — %s", src_lang, combined_error)
+    except Exception as e:
+        deep_error = str(e)
+
+    # Both failed
     return {
-        'translated_text': text,
-        'success': False,
-        'method': 'passthrough',
-        'error': combined_error,
+        "translated_text": text,
+        "success": False,
+        "method": "passthrough",
+        "error": "Translation services are temporarily unavailable.",
     }
-
 
 # ─── Combined: Detect + Translate ─────────────────────────────────────────────
 

@@ -16,6 +16,8 @@ requests>=2.31.0
 streamlit-local-storage
 # ── Multilingual support ────────────────────────────────────────────────────────
 langdetect>=1.0.9          # Offline language detection (no API key needed)
+googletrans==4.0.0-rc1
+deep-translator
 deep-translator>=1.11.4    # Free Google Translate wrapper (actively maintained, no key)
 # ── URL Scanner: webpage content analysis (new) ─────────────────────────────────
 beautifulsoup4>=4.12.0     # Safe visible-text extraction for scam/phishing scanning
