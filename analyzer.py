@@ -320,17 +320,21 @@ _INDICATOR_CATEGORIES = [
 ]
 
 
-def build_key_indicators(kw_found: dict, urls_found: list, contact_info: dict, level: str) -> dict:
+def build_key_indicators(kw_found, urls_found: list, contact_info: dict, level: str) -> dict:
     """
     Collapse every raw detection into a short, prioritised, de-duplicated
     list of user-facing indicators (+ matching plain-language explanations).
 
-    kw_found:      {keyword: weight} from score_keywords()
+    kw_found:      list of matched keyword strings from score_keywords()['found']
+                    (also accepts a {keyword: weight} dict for safety)
     urls_found:    list of URLs pulled from the text
     contact_info:  {'phones': [...], 'emails': [...]}
     level:         risk level string, used to gate low-signal noise
     """
-    found_lower = set(k.lower() for k in kw_found.keys())
+    if isinstance(kw_found, dict):
+        found_lower = set(k.lower() for k in kw_found.keys())
+    else:
+        found_lower = set(k.lower() for k in kw_found)
     picked = []  # (priority, label, explanation)
 
     for priority, matchers, label, explanation in _INDICATOR_CATEGORIES:
