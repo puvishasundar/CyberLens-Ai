@@ -2,7 +2,7 @@
 # AI-powered cybersecurity intelligence dashboard
 # Run: streamlit run app.py
 
-import os, time, datetime, json, html as _html
+import os, re as _re, time, datetime, json, html as _html
 import streamlit as st
 import plotly.graph_objects as go
 from streamlit_local_storage import LocalStorage
@@ -12,7 +12,7 @@ from analyzer import (
     analyse_text, analyse_text_full, analyse_url_full, analyse_qr,
     analyse_ocr_image, analyse_pdf, analyse_company
 )
-from utils import update_stats, avg_risk, make_empty_stats, compute_risk_level
+from utils import update_stats, avg_risk, make_empty_stats, compute_risk_level, SCAM_KEYWORDS
 from language_utils import language_badge_html, SUPPORTED_LANGUAGES
 
 
@@ -431,11 +431,251 @@ def risk_gauge(score: float, label: str = "Risk Score") -> go.Figure:
     fig.update_layout(**PLOTLY_LAYOUT, height=210)
     return fig
 
+# ══════════════════════════════════════════════════════════════════
+# SUSPICIOUS INDICATORS — display-only prioritisation layer
+# ══════════════════════════════════════════════════════════════════
+# The backend still detects, scores and returns EVERY keyword in
+# result["suspicious_kws"] (that list is never modified). This layer only
+# decides which few are worth SHOWING, so generic words (instagram, bank,
+# login, urgent, click …) don't drown out the real red flags.
+# Used by render_full_result() — i.e. Text, OCR, PDF, URL, QR and Company.
+_IND_MAX = 5
+
+# Lower tier number = shown first. Order follows the display priority:
+# 1 scam/phishing phrases · 2 credential/OTP/payment/sensitive requests ·
+# 3 account/security verification · 4 financial/fraud · 5 threats/urgency.
+_IND_TIERS = [
+    (1, _re.compile(
+        r"digital arrest|arrest|money laundering|illegal (international|transactions?)|lottery|"
+        r"lucky (winner|draw)|you (have )?won|(claim|selected)[a-z ]*(prize|reward|winner)|jackpot|"
+        r"gift card|customs|courier|(parcel|package|shipment)[a-z ]*(held|hold|destroy)|"
+        r"pay to (release|collect|receive)|scan (and win|to (receive|claim|unlock)|qr|the qr|this qr)|"
+        r"refund qr|qr (to receive|for refund)|remote access|screen sharing|download apk|"
+        r"guaranteed (returns?|profit|income|placement|selection)|(double|triple) your money|risk[- ]free|"
+        r"(placement|joining|registration|activation|processing|training|release|clearance|offer letter) "
+        r"(fee|charges?)|no interview|without interview|whatsapp hr|telegram manager|deepfake|"
+        r"voice clon|cloned voice|virus detected|call microsoft|cyber ?crime|"
+        r"(police|cbi|court|income tax|trai|rbi) (notice|order)|enforcement directorate|"
+        r"fir (filed|registration|will)|legal (action|notice|complaint)|free iphone|"
+        r"foreign inheritance|fake customer care")),
+    (2, _re.compile(
+        r"\botp\b|one[- ]time password|\bupi pin\b|\bpin\b|\bcvv\b|\bssn\b|password|"
+        r"bank (account )?details|banking details|card (number|details)|send (aadhaar|pan)|"
+        r"mother maiden|sensitive information|personal documents|share documents|biometric|"
+        r"collect request|payment request|approve request|kyc")),
+    (3, _re.compile(
+        r"verify|verification|confirm (your )?(account|password|identity)|"
+        r"account[- ](suspend|block|frozen|freeze|disabl|deactivat|hack)|"
+        r"(card|upi|sim|pan|net banking|aadhaar|passport|bank|mobile number|upi id) "
+        r"(blocked|suspended|frozen|deactivated)|unauthorized login|suspicious (activity|transaction)|"
+        r"security alert|login (expired|immediately)|identity (mismatch|suspension)|reactivate|"
+        r"freeze account|document mismatch|kyc")),
+    (4, _re.compile(
+        r"fee\b|charges?\b|payment|deposit|wire transfer|western union|moneygram|hawala|bitcoin|"
+        r"crypto|refund|tax|loan|returns?|profit|invest|winnings|cashback|salary|money|reward|bonus|earn")),
+    (5, _re.compile(
+        r"final (notice|warning)|last (chance|attempt|opportunity)|do not (ignore|delay)|"
+        r"within \d+ (minutes?|hours?)|(respond|reply|act|login|renew|activate) immediately|"
+        r"immediate (response|escalation)|failure to|if not paid|non-payment|legal consequences|"
+        r"avoid (suspension|arrest)|strict action|legal escalation|respond within|name will be removed")),
+]
+# Single words that are still worth showing on their own (very high-risk).
+_IND_SINGLE_OK = {"otp", "kyc", "cvv", "lottery", "jackpot"}
+_IND_ACRONYMS = {"otp", "kyc", "upi", "pin", "id", "pan", "sim", "fir", "cbi", "rbi", "ssn", "cvv",
+                 "apk", "qr", "ai", "hr", "it", "sbi", "trai", "epfo", "tds", "gst", "un", "sebi"}
+
+# Company Verifier returns full-sentence flags (not keywords) — ranked by meaning.
+_IND_COMPANY_RULES = [
+    (90, _re.compile(r"impersonat|mimic|typosquat|look-?alike")),
+    (80, _re.compile(r"disposable|fraud|scam|phishing")),
+    (70, _re.compile(r"suspicious keyword")),
+    (60, _re.compile(r"unrelated to the company|do not match|does not match|does not clearly match|"
+                     r"does not resemble|was not found in the website")),
+    (55, _re.compile(r"free/public email")),
+    (50, _re.compile(r'ip address|"@" character|shortened url')),
+]
+
+# URL results only carry bare tokens (login, verify, pay …). Alone they are
+# generic, so they are shown only as a meaningful combined phrase.
+_URL_CRED  = {"login", "signin", "verify", "confirm", "update", "secure", "account", "reset"}
+_URL_CORE  = {"login", "signin", "verify", "confirm"}
+_URL_MONEY = {"banking", "pay", "money", "cash", "deposit", "refund", "card", "loan", "crypto", "wallet"}
+_URL_LURE  = {"lucky", "win", "prize", "gift", "reward", "bonus", "claim", "giving", "free", "earn"}
+
+# ══════════════════════════════════════════════════════════════════
+# DISPLAY-ONLY semantic de-duplication for Analysis Highlights.
+#
+# The detector above (tiers, SCAM_KEYWORDS, regexes) is untouched — it can
+# still match as many near-identical phrasings as it likes ("Verify your
+# account", "Verify account", "Please verify your account", …). This block
+# only decides which of those matches are SHOWN to the user, so Highlights
+# reads as a set of distinct *signals* rather than repeats of one signal in
+# different words. Nothing here feeds back into detection or scoring.
+# ══════════════════════════════════════════════════════════════════
+
+# Filler words stripped before comparing phrases for similarity — these
+# don't carry meaning on their own ("please verify" vs "verify" is the
+# same underlying signal).
+_IND_STOPWORDS = {
+    "the", "a", "an", "to", "is", "are", "was", "were", "be", "been", "being",
+    "your", "you", "please", "kindly", "now", "immediately", "asap", "urgently",
+    "required", "requested", "request", "requests", "needs", "need", "must",
+    "will", "should", "this", "that", "these", "those", "of", "for", "on",
+    "in", "at", "and", "or", "as", "with", "do", "does", "did", "has",
+    "have", "had", "it", "its", "not", "right", "away",
+}
+
+# Known concept clusters: when a displayed phrase matches one of these, it
+# is shown using the clearer canonical label instead of the raw variant —
+# purely cosmetic renaming, it does not change what was detected.
+_IND_CONCEPT_LABELS = [
+    (_re.compile(r"verify|verification|confirm[a-z ]*(account|identity|password|details)"),
+     "Account verification requested"),
+    (_re.compile(r"\botp\b|\bupi pin\b|\bpin\b|\bcvv\b|card (number|details)|"
+                 r"bank (account )?details|banking details|password|mother maiden|biometric"),
+     "Payment/credential information requested"),
+    (_re.compile(r"final (notice|warning)|last (chance|attempt|opportunity)|"
+                 r"do not (ignore|delay)|within \d+ (minutes?|hours?)|"
+                 r"(respond|reply|act|login|renew|activate) immediately|"
+                 r"immediate (response|escalation)|respond within"),
+     "Urgent action requested"),
+    (_re.compile(r"suspicious (activity|transaction)|unauthorized login|security alert|"
+                 r"account[- ](suspend|block|frozen|freeze|disabl|deactivat)"),
+     "Suspicious account activity flagged"),
+    (_re.compile(r"shortened url|suspicious link|malicious link|phishing link"),
+     "Suspicious link detected"),
+]
+
+
+def _ind_signature(text: str) -> frozenset:
+    """Crude, dependency-free 'meaning fingerprint' for a display phrase.
+
+    Strips filler words and truncates the rest to a short prefix (cheap
+    stemming: 'verify'/'verification'/'verified' all collapse to 'verif').
+    Two phrases sharing a signature are treated as the same underlying
+    signal for DISPLAY purposes only — detection itself is unaffected.
+    """
+    words = [w for w in _re.findall(r"[a-z]+", text.lower()) if w not in _IND_STOPWORDS]
+    return frozenset(w[:5] if len(w) > 5 else w for w in words)
+
+
+def _ind_relabel(text: str) -> str:
+    """Swap a raw matched phrase for its canonical concept label, if any."""
+    low = text.lower()
+    for rx, label in _IND_CONCEPT_LABELS:
+        if rx.search(low):
+            return label
+    return _ind_pretty(text)
+
+
+def _diversify_indicators(ranked_texts: list) -> list:
+    """Given phrases already ordered by display priority, drop later ones
+    that are near-duplicates (same signature) of an earlier one, relabel the
+    survivors with their canonical concept name where one applies, and drop
+    any resulting duplicate labels (two different raw phrasings can map to
+    the same concept, e.g. 'final notice' and 'act immediately' both become
+    'Urgent action requested')."""
+    seen_sigs = set()
+    seen_labels = set()
+    out = []
+    for t in ranked_texts:
+        sig = _ind_signature(t)
+        if sig and sig in seen_sigs:
+            continue
+        label = _ind_relabel(t)
+        if label in seen_labels:
+            if sig:
+                seen_sigs.add(sig)
+            continue
+        if sig:
+            seen_sigs.add(sig)
+        seen_labels.add(label)
+        out.append(label)
+    return out
+
+
+def _ind_pretty(text: str) -> str:
+    """Sentence-case a lowercase keyword ('kyc verification' -> 'KYC verification')."""
+    if text != text.lower():
+        return text                       # already formatted (e.g. Company flags)
+    words = [w.upper() if w in _IND_ACRONYMS else w for w in text.split(" ")]
+    if words and words[0] == text.split(" ")[0]:
+        words[0] = words[0].capitalize()
+    return " ".join(words)
+
+
+def select_display_indicators(kws: list, result: dict = None, max_items: int = _IND_MAX) -> list:
+    """Return the few strongest indicators to DISPLAY. Never mutates `kws`."""
+    result = result or {}
+    if not kws:
+        return []
+
+    # ── Company Verifier: sentence flags, ranked by meaning ──────────────
+    if result.get("scan_type") == "Company Verifier":
+        ranked = []
+        for i, f in enumerate(dict.fromkeys(str(k) for k in kws)):
+            if f.lstrip()[:1] == "✓":     # positive finding, not a suspicious indicator
+                continue
+            score = next((sc for sc, rx in _IND_COMPANY_RULES if rx.search(f.lower())), 0)
+            if score:
+                ranked.append((-score, i, f))
+        ranked_texts = [f for _, _, f in sorted(ranked)]
+        # Display-only: collapse near-duplicate flags (e.g. multiple
+        # "suspicious keyword" style flags) down to distinct signals.
+        return _diversify_indicators(ranked_texts)[:max_items]
+
+    # ── Keyword / phrase results (Text, OCR, PDF, QR text, URL) ──────────
+    cands = []
+    seen = set()
+    for i, raw in enumerate(kws):
+        t = " ".join(str(raw).lower().split())
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        weight = SCAM_KEYWORDS.get(t, 0)              # backend's own severity
+        multiword = " " in t or "-" in t
+        tier = next((n for n, rx in _IND_TIERS if rx.search(t)), 0)
+        if tier in (1, 2, 3):
+            ok = multiword or t in _IND_SINGLE_OK or weight >= 4
+        elif tier in (4, 5):
+            ok = weight >= 4
+        else:
+            tier, ok = 6, weight >= 4                 # unmatched but rated severe by backend
+        if ok:
+            cands.append((tier, -weight, -len(t.split()), i, t))
+
+    # Drop a phrase already contained in a stronger/longer one ('otp' vs 'share otp')
+    texts = [c[4] for c in cands]
+    cands = [c for c in cands
+             if not any(o != c[4] and _re.search(r"\b" + _re.escape(c[4]) + r"\b", o) for o in texts)]
+    # Display-only: collapse near-duplicate phrasings of the same signal
+    # ("verify your account" / "verify account" / "account verification
+    # required" …) down to one clear representative per signal.
+    picked = _diversify_indicators([c[4] for c in sorted(cands)])
+
+    # URL tokens: surface a meaningful combination instead of generic words
+    if "domain" in result and "tld" in result:
+        toks = {str(k).lower() for k in kws}
+        combos = []
+        if len(toks & _URL_CRED) >= 2 and toks & _URL_CORE:
+            combos.append("Login / verification keywords in URL")
+        if toks & _URL_CORE and toks & _URL_MONEY:
+            combos.append("Verification with payment / banking keywords in URL")
+        if len(toks & _URL_LURE) >= 2 or (toks & _URL_LURE and toks & _URL_MONEY):
+            combos.append("Prize / reward / free-money keywords in URL")
+        elif len(toks & _URL_MONEY) >= 2:
+            combos.append("Payment / banking keywords in URL")
+        picked += combos
+
+    return picked[:max_items]
+
+
 def keyword_chips(keywords: list) -> None:
+    keywords = select_display_indicators(keywords)
     if not keywords:
-        H('<span style="color:#5a7a9a;font-size:0.82rem;font-family:monospace">No suspicious keywords detected.</span>')
+        H('<span style="color:#5a7a9a;font-size:0.82rem;font-family:monospace">Nothing notable detected.</span>')
         return
-    chips = "".join(f'<span class="kw-chip">{kw}</span>' for kw in keywords[:12])
+    chips = "".join(f'<span class="kw-chip">{kw}</span>' for kw in keywords)
     H(f'<div style="line-height:2.4">{chips}</div>')
 
 def recommendation_list(recs: list) -> None:
@@ -453,7 +693,8 @@ def render_full_result(result: dict) -> None:
     emoji  = result.get("risk_emoji", "🟢")
     verdict_text = result.get("verdict", "No verdict available.")
     recs   = result.get("recommendations", [])
-    kws    = result.get("suspicious_kws", [])
+    kws    = result.get("suspicious_kws", [])          # full backend list (untouched)
+    kws    = select_display_indicators(kws, result)     # display-only: strongest few
 
     # color palette by level
     level_meta = {
@@ -471,9 +712,9 @@ def render_full_result(result: dict) -> None:
 
     # Build HTML fragments used inside the big f-string below
     if kws:
-        kw_chips_html = "".join(f'<span class="kw-chip">{kw}</span>' for kw in kws[:12])
+        kw_chips_html = "".join(f'<span class="kw-chip">{kw}</span>' for kw in kws)
     else:
-        kw_chips_html = '<span style="color:#5a7a9a;font-size:0.82rem;font-family:monospace">No suspicious keywords detected.</span>'
+        kw_chips_html = '<span style="color:#5a7a9a;font-size:0.82rem;font-family:monospace">Nothing notable detected.</span>'
 
     rec_html = "".join(
         f'<div class="rec-item" style="animation-delay:{i*0.07}s">{rec}</div>'
@@ -746,7 +987,7 @@ def render_full_result(result: dict) -> None:
   <div class="divider"></div>
 
   <!-- Suspicious Indicators -->
-  <div class="section-hdr">⚡ Suspicious Indicators</div>
+  <div class="section-hdr">⚡ Analysis Highlights</div>
   <div style="line-height:2.4;margin-top:.25rem">{kw_chips_html}</div>
 
   {url_details_html}
