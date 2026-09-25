@@ -1859,13 +1859,7 @@ elif selected == "Analyzer":
                         'was_translated': False, 'translation_method': '',
                         'translation_success': False,
                     }))
-
-                if combined["has_urls"]:
-                    section_header(
-                        f"📝 Text Analysis ({len(combined['urls_found'])} link"
-                        f"{'s' if len(combined['urls_found']) != 1 else ''} detected below)",
-                        "📝",
-                    )
+                
                 render_full_result(result)
 
                 # ── Auto-triggered URL Analysis for every link found in the text ──
