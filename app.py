@@ -1,4 +1,4 @@
-# app.py — CyberLens AI  ·  Premium Redesign
+# app.py — UnifiedLens AI  ·  Premium Redesign
 # AI-powered cybersecurity intelligence dashboard
 # Run: streamlit run app.py
 
@@ -26,7 +26,7 @@ def H(html: str) -> None:
 # PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="CyberLens AI",
+    page_title="UnifiedLens AI",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1477,7 +1477,7 @@ body{{background:#020409;font-family:'Rajdhani',sans-serif;overflow:hidden}}
 <div class="cl-topbar">
   <div class="cl-brand">
     <div class="cl-brand-icon">🛡️</div>
-    <div class="cl-brand-name">CyberLens <span>AI</span></div>
+    <div class="cl-brand-name">UnifiedLens <span>AI</span></div>
   </div>
   <div class="cl-ticker-wrap">
     <div class="cl-ticker">
@@ -1567,7 +1567,7 @@ if selected == "Dashboard":
             <div class="radar-sweep"></div>
             <div class="radar-center">🛡️</div>
         </div>
-        <div class="cyber-title" style="margin-bottom:0.5rem">CyberLens AI</div>
+        <div class="cyber-title" style="margin-bottom:0.5rem">UnifiedLens AI</div>
         <div class="cyber-subtitle" style="margin-bottom:1.25rem">
              Multimodal AI Platform for Real-Time Cyber Scam Detection
         </div>
@@ -2022,7 +2022,7 @@ elif selected == "URL Scanner":
         # ── SYSTEM CONSOLE LOGGER (Detailed log requirements) ──────────────────
         _logs = st.session_state.result_url.get("debug_logs", {})
         print("\n" + "="*50)
-        print("[CyberLens AI - Live URL Scraper Debugger]")
+        print("[UnifiedLens AI - Live URL Scraper Debugger]")
         print(f"URL String Checked  : {url_val}")
         print(f"HTTP Return Status  : {_logs.get('http_status') or 'N/A'}")
         print(f"Response Body Size  : {_logs.get('response_size')} bytes")
@@ -2323,7 +2323,7 @@ elif selected == "About":
     ''')
     H('<div class="cyber-divider"></div>')
 
-    section_header("What CyberLens Protects Against", "🎯")
+    section_header("What UnifiedLens AI Protects Against", "🎯")
     st.write("")
     protect_items = [
         ("🧠", "Smart Threat Scan", "Analyzes messages for\nhidden scam patterns"),
@@ -2387,7 +2387,7 @@ elif selected == "About":
             Online scams are becoming increasingly sophisticated, targeting people through 
             suspicious messages, phishing links, fake websites, QR codes, images, documents, 
             and other digital channels.<br><br> 
-            <strong style="color:var(--primary)">CyberLens AI was built to help identify suspicious 
+            <strong style="color:var(--primary)">UnifiedLens AI was built to help identify suspicious 
             digital threats before they can cause harm</strong> — combining machine learning, 
             natural language processing, OCR, URL analysis, and cybersecurity heuristics 
             into an accessible, real-time threat detection platform.
@@ -2421,7 +2421,7 @@ elif selected == "About":
     <div style="text-align:center;padding:2.5rem 0 1rem;color:var(--text-dim);
                 font-family:var(--font-mono);font-size:0.75rem;letter-spacing:0.06em">
         <span style="color:var(--primary);font-family:var(--font-display);
-                     font-size:0.65rem;letter-spacing:0.15em">CYBERLENS AI</span>
+                     font-size:0.65rem;letter-spacing:0.15em">UnifiedLens AI</span>
         &nbsp;—&nbsp; Data Science Project by Puvisha S , Vidhya Priya P , Hemanthika M
     </div>
     ''')
